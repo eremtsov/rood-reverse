@@ -7187,7 +7187,8 @@ void vs_battle_exec(void)
                                     D_800F1858 = 1;
                                 }
                             }
-                            if (vs_main_buttonsPressed.all & PADRdown) {
+                            // mod: world interaction on Circle
+                            if (vs_main_buttonsPressed.all & PADRright) {
                                 if (func_800A38E0(0) >= 0) {
                                     if (!(vs_battle_characterState->weaponDrawn & 1)) {
                                         func_800A3E6C(0);
