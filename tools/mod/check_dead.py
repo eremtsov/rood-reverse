@@ -10,8 +10,8 @@ Scans EVERY file under data/ (the original game files; 5163 of them) for
   * raw 32-bit words (4-aligned and unaligned) equal to an address in the range
     (function pointer tables, jump tables, scripts).
 References coming from the range itself are ignored. The result is classified:
-  * a "real" reference is one found in a file that can be resident together with
-    BATTLE.PRG: BATTLE.PRG itself, SLUS_010.40, INITBTL.PRG, MENU/*.PRG,
+  * a "real" reference is an aligned one found in a file that can be resident together
+    with BATTLE.PRG: BATTLE.PRG itself, SLUS_010.40, INITBTL.PRG, MENU/*.PRG,
     GIM/SCREFF2.PRG, EFFECT/*.BIN.
     (TITLE.PRG and ENDING.PRG are loaded at the same address as BATTLE.PRG and never
     run together with it; every other file is data: video, audio, maps, models.)
@@ -57,7 +57,7 @@ for dirpath, _, names in os.walk(os.path.join(ROOT, 'data')):
             elif start <= w < end:
                 if not inside(i * 4):
                     hits.append(('word', rel, i * 4, w))
-            elif op == 0x0F and 0x800E <= (w & 0xFFFF) <= 0x800F:
+            elif op == 0x0F and 0x800E <= (w & 0xFFFF) <= 0x8010:
                 hi = w & 0xFFFF
                 reg = (w >> 16) & 31
                 for j in range(1, 40):
@@ -86,12 +86,13 @@ for dirpath, _, names in os.walk(os.path.join(ROOT, 'data')):
                     hits.append(('word-unaligned', rel, k, v))
 
 print('scanned %d files for references into 0x%08X..0x%08X (%d bytes)' % (nfiles, start, end, size))
-real = [h for h in hits if CO_RESIDENT(h[1])]
-noise = [h for h in hits if not CO_RESIDENT(h[1])]
+# an unaligned match can only be a coincidence of neighbouring bytes (tables of pointers are 4-aligned)
+real = [h for h in hits if CO_RESIDENT(h[1]) and h[0] != 'word-unaligned']
+noise = [h for h in hits if not (CO_RESIDENT(h[1]) and h[0] != 'word-unaligned')]
 print('references from co-resident code/data files: %d' % len(real))
 for h in real:
     print('   REAL  %-14s %-28s +0x%06X -> 0x%08X' % h)
-print('references from files that cannot call BATTLE.PRG (overlays at the same address, video, audio, maps...): %d' % len(noise))
+print('references that cannot be calls or pointers (unaligned matches, files that never run together with BATTLE.PRG: overlays at the same address, video, audio, maps...): %d' % len(noise))
 for h in noise[:12]:
     print('   noise %-14s %-28s +0x%06X -> 0x%08X' % h)
 if len(noise) > 12:
