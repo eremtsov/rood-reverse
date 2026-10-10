@@ -7225,7 +7225,8 @@ void vs_battle_exec(void)
                                     _initBattleCameraTransition();
                                     break;
                                 }
-                                if (vs_main_buttonsPressed.all & PADRright) {
+                                // mod: draw (sheathed) / attack (drawn) on Cross
+                                if (vs_main_buttonsPressed.all & PADRdown) {
                                     if (vs_battle_characterState->weaponDrawn & 1) {
                                         if ((vs_battle_characterState->unk3C->unk954 == 0)
                                             && !(vs_battle_characterState->unk3C->statuses
@@ -7241,7 +7242,8 @@ void vs_battle_exec(void)
                                         break;
                                     }
                                 }
-                                if ((vs_main_buttonsPressed.all & PADRdown)
+                                // mod: sheathe on Circle
+                                if ((vs_main_buttonsPressed.all & PADRright)
                                     && (vs_battle_characterState->weaponDrawn & 1)) {
                                     func_800734C0();
                                     break;
