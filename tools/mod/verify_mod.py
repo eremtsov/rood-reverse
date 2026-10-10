@@ -1,12 +1,20 @@
 #!/usr/bin/env python3
-"""Static verification of the weapon-swap mod build; writes a text log.
+"""Static verification of the weapon-slots mod build; writes a text log.
 
-    python3 -I tools/mod/verify_mod.py OUTPUT_LOG
+    python3 -I tools/mod/verify_mod.py OUTPUT_LOG PREVIOUS_IMAGE.bin
 
-Run after tools/mod/build_mod.sh. Needs
-  .baseline/data          a copy of build/data from before the weapon mod (confirm-swap build)
-  .baseline_v1/BATTLE.PRG the BATTLE.PRG of the previous release ([mod-weapons])
-and, if present, previous mod images in the directory named by $VS_MOD_IMG_DIR.
+Run after tools/mod/build_mod.sh (and tools/mod/run_dead_checks.sh). PREVIOUS_IMAGE is the image the
+new one is compared against sector by sector (the previous release of the same variant). Checks:
+  1. section sizes against the free ranges, symbols, where every function lives
+  2. the code of every function of the mod (decoded from the shipped BATTLE.PRG): MIPS-I only, jal targets are
+     real function entries, stack frames balanced, no load-delay hazards, branches stay inside the function,
+     no indirect jumps except `jr ra`
+  3. hook sites
+  4. every changed byte range of BATTLE.PRG against the toolchain build and against the previous release
+  5. disc image: size, only BATTLE.PRG sectors differ from the previous release, EDC/ECC of every changed
+     sector, the file extracted from the image equals build/data/BATTLE/BATTLE.PRG
+  6. the dead-code scan of every overwritten function (tools/mod/run_dead_checks.sh)
+  7. the behavioural test of the shipped bytes (tools/mod/test_wswap.py)
 """
 import hashlib
 import os
@@ -37,62 +45,79 @@ def fail(msg):
 
 
 PRG_RAM = 0x80068800
-TAIL_OFF = 0x8D124
 PRG_SIZE = 579584
-HOOK_OFF = 0x1111C
-BLOB_RAM = 0x800F5924
-BLOB_LIMIT = 0x800F6000
-DEAD_RAM = 0x800B26B8
-DEAD_OFF = DEAD_RAM - PRG_RAM
-DEAD_SIZE = 496
-IMG_DIR = os.path.join(os.environ.get('VS_MOD_IMG_DIR', ''), '')
+TAIL_RAM, TAIL_LIMIT = 0x800F5924, 0x800F6000
+PRG_LBA, PRG_SECTORS = 1100, 283
+# section : (RAM, size of the unreferenced function range, name of the function(s))
+DEAD = {
+    '.wswap2': (0x800B26B8, 496, 'func_800B26B8'),
+    '.wA': (0x800D197C, 412, 'func_800D197C'),
+    '.wB': (0x800AA108, 392, 'func_800AA108 + func_800AA218'),
+    '.wC': (0x800D155C, 284, 'func_800D155C'),
+    '.wD': (0x80099854, 268, 'func_80099854 + func_80099900'),
+    '.wE': (0x8009BD90, 204, 'func_8009BD90'),
+    '.wF': (0x800733F8, 140, 'func_800733F8'),
+    '.wH': (0x8007FF8C, 116, 'func_8007FF8C'),
+}
+HOOKS = [(0x8007991C, 'vs_battle_exec: jal vs_main_processPadState', 'wswap_entry'),
+         (0x800CA0A4, 'func_800C9FE8: jal func_800C9EB8 (D-pad group)', 'wslot_label'),
+         (0x800CA1AC, 'func_800C9FE8: jal func_800C9EB8 (button group)', 'wslot_label')]
+
+prev_img = sys.argv[2]
 
 p('=' * 78)
-p('Vagrant Story weapon-swap mod v2: build verification log')
+p('Vagrant Story weapon-slots mod: build verification log')
 p('=' * 78)
-p('commit:', sh('git rev-parse HEAD').strip(), '(+ uncommitted changes, if any:',
-  sh('git status --short | wc -l').strip(), 'entries)')
+p('commit:', sh('git rev-parse HEAD').strip(), '(+ uncommitted changes:', sh('git status --short | wc -l').strip(), 'entries)')
+p('branch:', sh('git rev-parse --abbrev-ref HEAD').strip())
 p('compiler: tools/old-gcc/2.8.1-psx/cc1 -G0 -O2 -Wall -fno-builtin -funsigned-char (BATTLE.PRG C flags)')
+p('previous image:', prev_img)
 
-# ---- blobs --------------------------------------------------------------------
-blob = open('build/mod/wswap.bin', 'rb').read()
-blob2 = open('build/mod/wswap2.bin', 'rb').read()
+new_prg = open('build/data/BATTLE/BATTLE.PRG', 'rb').read()
+pristine = open('build/mod/BATTLE.PRG.pristine', 'rb').read()
+orig_disc = open('data/BATTLE/BATTLE.PRG', 'rb').read()
+if len(new_prg) != PRG_SIZE:
+    fail('BATTLE.PRG size %d' % len(new_prg))
+
+# ---- 1. sections and symbols -------------------------------------------------------------------
 p()
-p('-- 1. blob sizes')
-p('wswap.bin  (tail of BATTLE.PRG): %d bytes; RAM %08X..%08X; room %d bytes; free %d bytes'
-  % (len(blob), BLOB_RAM, BLOB_RAM + len(blob), BLOB_LIMIT - BLOB_RAM, BLOB_LIMIT - BLOB_RAM - len(blob)))
-p('wswap2.bin (func_800B26B8 body): %d bytes; RAM %08X..%08X; room %d bytes; free %d bytes'
-  % (len(blob2), DEAD_RAM, DEAD_RAM + len(blob2), DEAD_SIZE, DEAD_SIZE - len(blob2)))
-if len(blob) > BLOB_LIMIT - BLOB_RAM:
-    fail('tail blob too big')
-if len(blob2) > DEAD_SIZE:
-    fail('func_800B26B8 blob too big')
+p('-- 1. sections')
+elf = 'build/mod/wswap.elf'
+hdr = sh(CROSS + 'objdump -h ' + elf)
+sizes = {}
+for m in re.finditer(r'^\s*\d+\s+(\.\w+)\s+([0-9a-f]{8})\s+([0-9a-f]{8})', hdr, re.M):
+    sizes[m.group(1)] = (int(m.group(2), 16), int(m.group(3), 16))
+tail_size = sizes['.wswap'][0]
+p('.wswap  tail of BATTLE.PRG        RAM %08X: %4d bytes of %d (%d free)' % (TAIL_RAM, tail_size, TAIL_LIMIT - TAIL_RAM, TAIL_LIMIT - TAIL_RAM - tail_size))
+if sizes['.wswap'][1] != TAIL_RAM or tail_size > TAIL_LIMIT - TAIL_RAM:
+    fail('tail section')
+for sec, (ram, size, name) in DEAD.items():
+    s, a = sizes[sec]
+    p('%-8s %-28s RAM %08X: %4d bytes of %d (%d free)' % (sec, name, ram, s, size, size - s))
+    if a != ram or s > size:
+        fail('section %s' % sec)
 
-nm = sh(CROSS + 'nm -n build/mod/wswap.elf')
-syms = {}
+nm = sh(CROSS + 'nm -S -n ' + elf)
+funcs = {}   # name -> (addr, size)
+allsyms = {}
 for l in nm.splitlines():
     f = l.split()
-    if len(f) != 3:
-        continue
-    a, t, n = f
-    a = int(a, 16)
-    if BLOB_RAM <= a < BLOB_LIMIT or DEAD_RAM <= a < DEAD_RAM + DEAD_SIZE:
-        syms[n] = a
-p('blob symbols:', ', '.join('%s=%08X' % kv for kv in sorted(syms.items(), key=lambda kv: kv[1])))
-entry = syms['wswap_entry']
-if syms['beginSwap'] != DEAD_RAM:
-    fail('beginSwap is not at the entry of func_800B26B8')
+    if len(f) == 4 and f[2] in 'Tt':
+        funcs[f[3]] = (int(f[0], 16), int(f[1], 16))
+    if len(f) >= 3:
+        allsyms[f[-1]] = int(f[0], 16)
+p('functions of the mod:')
+for n, (a, s) in sorted(funcs.items(), key=lambda kv: kv[1][0]):
+    where = 'tail' if TAIL_RAM <= a < TAIL_LIMIT else [sec for sec, (r, z, _) in DEAD.items() if r <= a < r + z][0]
+    p('   %-14s %08X  %4d bytes  in %s' % (n, a, s, where))
+data_syms = [(n, a) for n, a in allsyms.items() if n.startswith('wl_')]
+p('constant data:', ', '.join('%s=%08X' % x for x in sorted(data_syms, key=lambda x: x[1])))
+if 'wl_hint' not in allsyms:
+    fail('constant data missing')
+entry = allsyms['wswap_entry']
+label = allsyms['wslot_label']
 
-def in_blob(t):
-    return BLOB_RAM <= t < BLOB_RAM + len(blob) or DEAD_RAM <= t < DEAD_RAM + len(blob2)
-
-# ---- disassembly --------------------------------------------------------------
-dis = sh(CROSS + 'objdump -d -j .wswap -j .wswap2 build/mod/wswap.elf')
-p()
-p('-- 2. full disassembly of both blobs (objdump)')
-p(dis)
-
-# ---- jal targets ---------------------------------------------------------------
+# ---- 2. code ---------------------------------------------------------------------------------------
 def load_syms():
     d = {}
     for f in ('config/BATTLE/BATTLE.PRG/symbol_addrs.txt', 'config/SLUS_010.40/symbol_addrs.txt',
@@ -106,271 +131,393 @@ def load_syms():
 
 
 names = load_syms()
-prg_pristine = open('build/mod/BATTLE.PRG.pristine', 'rb').read()
 slus = open('build/data/SLUS_010.40', 'rb').read()
-SLUS_RAM = 0x80010000
-slus_hdr = 0x800  # SLUS_010.40 on disc has a 0x800-byte PS-X EXE header
-p()
-p('-- 3. jal / j targets (every call out of the blobs)')
-insns = re.findall(r'^\s*([0-9a-f]{8}):\s+([0-9a-f]{8})\s', dis, re.M)
-targets = {}
-for addr, word in insns:
-    addr = int(addr, 16)
-    w = int(word, 16)
-    op = w >> 26
-    if op in (2, 3):
-        t = (addr & 0xF0000000) | ((w & 0x3FFFFFF) << 2)
-        kind = 'jal' if op == 3 else 'j'
-        if in_blob(t):
-            if kind == 'jal' and t not in syms.values():
-                fail('jal into the middle of the blob at %08X -> %08X' % (addr, t))
-            elif kind == 'j' and (addr >= DEAD_RAM) != (t >= DEAD_RAM):
-                fail('j between the two blobs at %08X' % addr)
-            continue
-        if kind == 'j':
-            fail('j leaves the blob at %08X' % addr)
-        targets.setdefault(t, []).append(addr)
-p('internal jal targets (inside the blobs): %s' % ', '.join(
-    sorted('%s=%08X' % (n, a) for n, a in syms.items() if n in ('equippedSlot', 'beginSwap'))))
+SLUS_RAM, slus_hdr = 0x80010000, 0x800
+ovl = []
+for root, _, files in os.walk('build/data'):
+    for fn in files:
+        if (fn.endswith('.PRG') and not root.endswith('BATTLE')) or fn == 'INITBTL.PRG':
+            ovl.append(open(os.path.join(root, fn), 'rb').read())
 
-def word_at(t):
-    if PRG_RAM <= t < PRG_RAM + len(prg_pristine):
-        return prg_pristine, t - PRG_RAM
+SPECIAL_OK = {0x00, 0x02, 0x03, 0x04, 0x06, 0x07, 0x08, 0x10, 0x12, 0x18, 0x19, 0x1A, 0x1B, 0x20, 0x21, 0x22, 0x23,
+              0x24, 0x25, 0x26, 0x27, 0x2A, 0x2B}   # sll srl sra sllv srlv srav jr mfhi mflo mult multu div divu add..sltu
+MAIN_OK = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F,
+           0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x28, 0x29, 0x2A, 0x2B, 0x2E}
+LOADS = {0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26}
+STORES = {0x28, 0x29, 0x2A, 0x2B, 0x2E}
+REGIMM_OK = {0, 1, 16, 17}
+
+
+def reads(w):
+    """registers read by an instruction"""
+    op = w >> 26
+    rs, rt = (w >> 21) & 31, (w >> 16) & 31
+    if op == 0:
+        fn = w & 63
+        if fn in (0, 2, 3):
+            return {rt}
+        if fn in (8, 9, 0x11, 0x13):
+            return {rs}
+        if fn in (0x10, 0x12):
+            return set()
+        return {rs, rt}
+    if op == 1:
+        return {rs}
+    if op in (2, 3, 0x0F):
+        return set()
+    if op in (4, 5) or op in STORES:
+        return {rs, rt}
+    return {rs}
+
+
+def img_at(t):
+    if PRG_RAM <= t < PRG_RAM + len(pristine):
+        return pristine, t - PRG_RAM
     if SLUS_RAM <= t < SLUS_RAM + len(slus) - slus_hdr:
         return slus, t - SLUS_RAM + slus_hdr
     return None, None
 
-ovl_cache = []
-for root, _, files in os.walk('build/data'):
-    for fn in files:
-        if (fn.endswith('.PRG') and not root.endswith('BATTLE')) or fn == 'INITBTL.PRG':
-            ovl_cache.append(open(os.path.join(root, fn), 'rb').read())
 
-for t in sorted(targets):
-    img, off = word_at(t)
-    nm_ = names.get(t, '?')
+p()
+p('-- 2. code of the mod, decoded from the shipped BATTLE.PRG')
+all_targets = {}
+for fname, (fa, fs) in sorted(funcs.items(), key=lambda kv: kv[1][0]):
+    off = fa - PRG_RAM
+    words = list(struct.unpack_from('<%dI' % (fs // 4), new_prg, off))
+    n = len(words)
+    sp_adj, saved, restored = [], set(), set()
+    nret = 0
+    problems = []
+    for i, w in enumerate(words):
+        addr = fa + 4 * i
+        op = w >> 26
+        if op == 0:
+            if (w & 63) not in SPECIAL_OK:
+                problems.append('%08X: SPECIAL %02x is not MIPS-I' % (addr, w & 63))
+            if (w & 63) == 8:
+                if ((w >> 21) & 31) != 31:
+                    problems.append('%08X: jr through a register other than ra' % addr)
+                else:
+                    nret += 1
+                    # the stack is released in the jr delay slot or just before
+                    near = words[max(0, i - 2):i + 2]
+                    if not any((x >> 16) == 0x27BD and not (x & 0x8000) for x in near) and sp_adj:
+                        problems.append('%08X: return without releasing the frame' % addr)
+        elif op == 1:
+            if ((w >> 16) & 31) not in REGIMM_OK:
+                problems.append('%08X: REGIMM %d' % (addr, (w >> 16) & 31))
+        elif op not in MAIN_OK:
+            problems.append('%08X: opcode %02x is not MIPS-I' % (addr, op))
+        if op == 2:
+            t = (addr & 0xF0000000) | ((w & 0x3FFFFFF) << 2)
+            if not (fa <= t < fa + fs):
+                problems.append('%08X: j leaves the function (-> %08X)' % (addr, t))
+        if op == 3:
+            t = (addr & 0xF0000000) | ((w & 0x3FFFFFF) << 2)
+            blob_f = [k for k, (a, s) in funcs.items() if a == t]
+            if blob_f:
+                all_targets.setdefault(t, []).append((fname, addr, blob_f[0]))
+            else:
+                all_targets.setdefault(t, []).append((fname, addr, names.get(t, '?')))
+        if op in (4, 5, 6, 7) or (op == 1 and ((w >> 16) & 31) in (0, 1, 16, 17)):
+            simm = w & 0xFFFF
+            simm -= 0x10000 if simm & 0x8000 else 0
+            t = addr + 4 + simm * 4
+            if not (fa <= t < fa + fs):
+                problems.append('%08X: branch leaves the function (-> %08X)' % (addr, t))
+        if (w >> 16) == 0x27BD:
+            imm = w & 0xFFFF
+            sp_adj.append(imm - 0x10000 if imm & 0x8000 else imm)
+        if op == 0x2B and ((w >> 21) & 31) == 29:
+            saved.add(((w >> 16) & 31, w & 0xFFFF))
+        if op == 0x23 and ((w >> 21) & 31) == 29:
+            restored.add(((w >> 16) & 31, w & 0xFFFF))
+        # load-delay hazard: the next executed instruction(s) must not read the loaded register
+        if op in LOADS and ((w >> 16) & 31) != 0:
+            rt = (w >> 16) & 31
+            nxt = []
+            prevw = words[i - 1] if i > 0 else 0
+            pop = prevw >> 26
+            prev_is_branch = pop in (2, 3, 4, 5, 6, 7) or (pop == 1) or (pop == 0 and (prevw & 63) in (8, 9))
+            if prev_is_branch:
+                # the load sits in a delay slot: the next executed instruction is the branch target (or the fall-through)
+                if pop in (4, 5, 6, 7) or pop == 1:
+                    simm = prevw & 0xFFFF
+                    simm -= 0x10000 if simm & 0x8000 else 0
+                    t = fa + 4 * (i - 1) + 4 + simm * 4
+                    if fa <= t < fa + fs:
+                        nxt.append(words[(t - fa) // 4])
+                    if i + 1 < n:
+                        nxt.append(words[i + 1])
+                elif pop in (2, 3):
+                    t = ((fa + 4 * i) & 0xF0000000) | ((prevw & 0x3FFFFFF) << 2)
+                    nxt.append(None)   # the callee: it starts with prologue code, checked separately below
+                else:
+                    nxt.append(None)
+            elif i + 1 < n:
+                nxt.append(words[i + 1])
+            for x in nxt:
+                if x is not None and rt in reads(x):
+                    problems.append('%08X: load-delay hazard on r%d' % (addr, rt))
+    if sp_adj and sum(sp_adj) != 0:
+        problems.append('unbalanced stack: %s' % sp_adj)
+    if saved != restored:
+        problems.append('saved %s / restored %s' % (sorted(saved), sorted(restored)))
+    if words[-2] != 0x03E00008:
+        problems.append('function does not end with jr ra + delay slot')
+    p('   %-14s %4d bytes, %3d instructions, frame %s, returns %d, saves %s' % (
+        fname, fs, n, '%d' % -sp_adj[0] if sp_adj else '0', nret,
+        ','.join('r%d' % r for r, _ in sorted(saved, key=lambda x: x[1])) or '-'))
+    for pr in problems:
+        fail('%s: %s' % (fname, pr))
+
+p()
+p('   jal targets (every call made by the mod):')
+for t in sorted(all_targets):
+    callers = all_targets[t]
+    nm_ = callers[0][2]
+    if any(t == a for a, s in funcs.values()):
+        p('   %08X %-34s mod function, called %d times' % (t, nm_, len(callers)))
+        continue
+    img, off = img_at(t)
     if img is None:
-        fail('target %08X is outside BATTLE.PRG and SLUS_010.40' % t)
+        fail('jal target %08X is outside BATTLE.PRG and SLUS_010.40' % t)
         continue
     jalw = struct.pack('<I', 0x0C000000 | (t >> 2 & 0x3FFFFFF))
-    callers_prg = prg_pristine.count(jalw)
-    callers_slus = slus.count(jalw)
-    callers_ovl = sum(o.count(jalw) for o in ovl_cache)
+    ncall = pristine.count(jalw) + slus.count(jalw) + sum(o.count(jalw) for o in ovl)
+    prevw = struct.unpack_from('<II', img, off - 8)
     first = struct.unpack_from('<III', img, off)
-    prev = struct.unpack_from('<II', img, off - 8) if off >= 8 else (0, 0)
-    p('%08X %-34s called from blob at %s' % (t, nm_, ', '.join('%08X' % a for a in targets[t])))
-    p('         existing jal callers in game: BATTLE.PRG=%d SLUS_010.40=%d other overlays=%d; first words %08X %08X %08X; '
-      'preceding words %08X %08X' % (callers_prg, callers_slus, callers_ovl, first[0], first[1], first[2], prev[0], prev[1]))
-    if nm_ == '?':
-        fail('no symbol for %08X' % t)
+    # the previous function ends with jr ra, or (the sound thunks) with a tail `j` + delay slot
+    entry_ok = prevw[0] == 0x03E00008 or (prevw[0] >> 26) == 2 or prevw[1] == 0x03E00008 or (prevw == (0, 0))
+    p('   %08X %-34s existing jal callers in the game: %d; first words %08X %08X %08X; previous function ends %s'
+      % (t, nm_, ncall, first[0], first[1], first[2], 'with jr ra' if entry_ok else 'unusually (%08X %08X)' % prevw))
+    if nm_ == '?' or ncall == 0:
+        fail('jal target %08X (%s) is not a known function' % (t, nm_))
     m = re.match(r'func_([0-9A-F]{8})$', nm_)
     if m and int(m.group(1), 16) != t:
-        fail('name/address mismatch %s %08X' % (nm_, t))
-    if callers_prg + callers_slus + callers_ovl == 0:
-        fail('%08X is never called as jal elsewhere in the game' % t)
-    # a function entry: previous function ends with jr ra (+ delay slot) or the entry follows padding
-    if not (prev[0] == 0x03E00008 or prev[1] == 0x03E00008 or prev == (0, 0)):
-        p('         note: the words before %08X are not "jr ra" (%08X %08X); entry is still a jal target elsewhere' % (t, prev[0], prev[1]))
+        fail('name/address mismatch %s' % nm_)
+    if not entry_ok:
+        fail('jal target %08X does not follow a function end' % t)
+    # the target's own first instructions must not be a load-delay victim of the delay slot we leave: the mod always
+    # places the argument set-up in the delay slot with an ALU/move instruction (checked by the load-hazard scan above)
 
-# ---- stack frames ----------------------------------------------------------------
+# ---- 3. hooks ---------------------------------------------------------------------------------------------
 p()
-p('-- 4. stack discipline (frame setup / teardown per function)')
-by_addr = sorted((a, n) for n, a in syms.items() if n in ('equippedSlot', 'beginSwap', 'wswap_entry'))
+p('-- 3. hook sites (patched `jal`)')
+jtarget = lambda w: 0x80000000 | ((w & 0x3FFFFFF) << 2)
+for ram, what, fn in HOOKS:
+    off = ram - PRG_RAM
+    ow = struct.unpack_from('<I', pristine, off)[0]
+    nw = struct.unpack_from('<I', new_prg, off)[0]
+    dw = struct.unpack_from('<I', new_prg, off + 4)[0]
+    p('%08X (file 0x%X) %-52s %08X jal %08X (%s) -> %08X jal %08X (%s @ %08X); delay slot %08X unchanged'
+      % (ram, off, what, ow, jtarget(ow), names.get(jtarget(ow)), nw, jtarget(nw), fn, allsyms[fn], dw))
+    if (ow >> 26) != 3 or jtarget(nw) != allsyms[fn] or (nw >> 26) != 3:
+        fail('hook %08X' % ram)
+    if struct.unpack_from('<I', new_prg, off + 4)[0] != struct.unpack_from('<I', pristine, off + 4)[0]:
+        fail('delay slot of hook %08X changed' % ram)
 
-
-def func_of(a):
-    cur = None
-    for fa, fn in by_addr:
-        if (fa >= DEAD_RAM and fa < DEAD_RAM + DEAD_SIZE) == (a >= DEAD_RAM and a < DEAD_RAM + DEAD_SIZE) and fa <= a:
-            cur = fn
-    return cur
-
-
-fr = {}
-saved = {}
-for addr, word in insns:
-    a = int(addr, 16)
-    w = int(word, 16)
-    cur = func_of(a)
-    if (w >> 16) == 0x27BD:  # addiu sp,sp,imm
-        imm = w & 0xFFFF
-        imm = imm - 0x10000 if imm & 0x8000 else imm
-        fr.setdefault(cur, []).append(imm)
-    if (w >> 26) == 0x2B and ((w >> 21) & 31) == 29:  # sw x, off(sp)
-        saved.setdefault(cur, set()).add(((w >> 16) & 31, w & 0xFFFF))
-    if (w >> 26) == 0x23 and ((w >> 21) & 31) == 29:  # lw x, off(sp)
-        saved.setdefault(cur + '/restore', set()).add(((w >> 16) & 31, w & 0xFFFF))
-for n, v in fr.items():
-    p('%-14s sp adjustments: %s -> net %d' % (n, v, sum(v)))
-    if sum(v) != 0:
-        fail('unbalanced stack in %s' % n)
-for n in sorted(saved):
-    if n.endswith('/restore'):
-        continue
-    if saved[n] != saved.get(n + '/restore', set()):
-        fail('saved/restored register mismatch in %s: %s vs %s' % (n, saved[n], saved.get(n + '/restore')))
-    else:
-        p('%-14s saves/restores %s' % (n, ', '.join('r%d@%d' % (r, o) for r, o in sorted(saved[n], key=lambda x: x[1]))))
-
-# ---- hook ----------------------------------------------------------------------------
-p()
-p('-- 5. hook site')
-new_prg = open('build/data/BATTLE/BATTLE.PRG', 'rb').read()
-old_w = struct.unpack_from('<I', prg_pristine, HOOK_OFF)[0]
-new_w = struct.unpack_from('<I', new_prg, HOOK_OFF)[0]
-tgt = lambda w: (0x80000000 | ((w & 0x3FFFFFF) << 2))
-p('BATTLE.PRG file offset 0x%X = RAM 0x%08X' % (HOOK_OFF, PRG_RAM + HOOK_OFF))
-p('original: %08X = jal %08X (%s)' % (old_w, tgt(old_w), names.get(tgt(old_w))))
-p('patched : %08X = jal %08X (wswap_entry @ %08X)' % (new_w, tgt(new_w), entry))
-if tgt(new_w) != entry or tgt(old_w) != 0x80043940:
-    fail('hook mismatch')
-p('delay slot word after the call (unchanged):', '%08X' % struct.unpack_from('<I', new_prg, HOOK_OFF + 4)[0])
-p('call site expects v0 = return value (compared with -1): the blob returns what vs_main_processPadState returned (s5 = v0 saved right after the call)')
-
-# ---- file diffs ------------------------------------------------------------------------
-def runs(a, b):
-    """merged differing byte ranges between two equally long buffers"""
+# ---- 4. byte ranges -----------------------------------------------------------------------------------------
+def clusters(a, b, gap=16):
     res = []
-    i = 0
-    n = len(a)
-    while i < n:
+    for i in range(min(len(a), len(b))):
         if a[i] != b[i]:
-            j = i
-            while j < n and (a[j] != b[j] or (j + 1 < n and a[j + 1] != b[j + 1])):
-                j += 1
-            res.append((i, j))
-            i = j
-        else:
-            i += 1
+            if res and i - res[-1][1] <= gap:
+                res[-1][1] = i + 1
+            else:
+                res.append([i, i + 1])
     return res
 
 
+regions = [('hook vs_battle_exec', 0x8007991C, 4), ('hook label call 1', 0x800CA0A4, 4), ('hook label call 2', 0x800CA1AC, 4)]
+regions += [('%s (%s)' % (n, sec), r, z) for sec, (r, z, n) in DEAD.items()]
+regions += [('tail of the last sector', TAIL_RAM, TAIL_LIMIT - TAIL_RAM)]
+
+
+def region_of(i):
+    a = i + PRG_RAM
+    for n, r, z in regions:
+        if r <= a < r + z:
+            return n
+    return None
+
+
 p()
-p('-- 6. BATTLE.PRG')
-if len(new_prg) != PRG_SIZE:
-    fail('size %d' % len(new_prg))
-p('on-disc size %d (579584 = 283 sectors): %s' % (len(new_prg), 'ok' if len(new_prg) == PRG_SIZE else 'BAD'))
-base_prg = open('.baseline/data/BATTLE/BATTLE.PRG', 'rb').read()
-v1_prg = open('.baseline_v1/BATTLE.PRG', 'rb').read()
-p('(a) against the build before the weapon mod (.baseline, %d bytes):' % len(base_prg))
-if len(base_prg) != TAIL_OFF:
-    fail('baseline PRG is not %d bytes' % TAIL_OFF)
-diffs = [i for i in range(len(base_prg)) if base_prg[i] != new_prg[i]]
-head = sorted(set(i & ~3 for i in diffs))
-inword = [i for i in head if i != HOOK_OFF and not (DEAD_OFF <= i < DEAD_OFF + len(blob2))]
-p('    differing bytes inside the old file extent: %d' % len(diffs))
-p('    hook word at 0x%X: %s' % (HOOK_OFF, 'differs' if HOOK_OFF in head else 'same'))
-p('    func_800B26B8 body 0x%X..0x%X (%d bytes): %d bytes differ from the original function'
-  % (DEAD_OFF, DEAD_OFF + len(blob2), len(blob2), sum(1 for i in diffs if DEAD_OFF <= i < DEAD_OFF + len(blob2))))
-if inword:
-    fail('unexpected changes inside the old PRG body at %s' % ', '.join('0x%X' % i for i in inword))
-if new_prg[DEAD_OFF:DEAD_OFF + len(blob2)] != blob2:
-    fail('func_800B26B8 region does not hold wswap2.bin')
-if new_prg[DEAD_OFF + len(blob2):DEAD_OFF + DEAD_SIZE] != base_prg[DEAD_OFF + len(blob2):DEAD_OFF + DEAD_SIZE]:
-    fail('rest of func_800B26B8 changed')
-tail = new_prg[len(base_prg):]
-tail_ok = tail[:len(blob)] == blob and not any(tail[len(blob):])
-p('    appended region 0x%X..0x%X (%d bytes): blob %d bytes at start, rest zero: %s'
-  % (len(base_prg), len(new_prg), len(tail), len(blob), 'ok' if tail_ok else 'BAD'))
-if not tail_ok:
+p('-- 4. BATTLE.PRG byte ranges')
+pr_pad = pristine + bytes(PRG_SIZE - len(pristine))
+cl = clusters(pr_pad, new_prg)
+p('(a) against the toolchain build before the mod patch (build/mod/BATTLE.PRG.pristine, %d bytes): %d changed ranges' % (len(pristine), len(cl)))
+byreg = {}
+for a, b in cl:
+    p('    0x%06X..0x%06X (RAM %08X..%08X, %4d bytes) in %s' % (a, b, a + PRG_RAM, b + PRG_RAM, b - a, region_of(a)))
+    for i in range(a, b):
+        if region_of(i) is None:
+            fail('changed byte outside the allowed regions: 0x%X (RAM %08X)' % (i, i + PRG_RAM))
+            break
+    byreg.setdefault(region_of(a), 0)
+for sec, (r, z, n) in DEAD.items():
+    s = sizes[sec][0]
+    off = r - PRG_RAM
+    same = new_prg[off + s:off + z] == orig_disc[off + s:off + z]
+    was_orig = pr_pad[off:off + z] == orig_disc[off:off + z]
+    p('    %-8s %-28s mod code %3d bytes, the other %3d bytes of the range are the original code: %s; range was original before: %s'
+      % (sec, n, s, z - s, 'yes' if same else 'NO', 'yes' if was_orig else 'NO'))
+    if not same:
+        fail('%s: bytes behind the mod code differ from the original function' % sec)
+    if not was_orig:
+        fail('%s: the toolchain build differs from the disc BATTLE.PRG there (not original code?)' % sec)
+tail = new_prg[len(pristine):]
+if tail[:tail_size] != open('build/mod/wswap.bin', 'rb').read() or any(tail[tail_size:]):
     fail('tail content')
+else:
+    p('    tail: blob %d bytes, rest zero up to 579584: ok' % tail_size)
 
-p('(b) against the previous release ([mod-weapons], .baseline_v1/BATTLE.PRG, %d bytes): every changed byte range' % len(v1_prg))
-if len(v1_prg) != PRG_SIZE:
-    fail('v1 PRG size')
-changed_bytes = [i for i in range(PRG_SIZE) if v1_prg[i] != new_prg[i]]
-allowed = [('hook word', HOOK_OFF, HOOK_OFF + 4), ('func_800B26B8 body', DEAD_OFF, DEAD_OFF + DEAD_SIZE),
-           ('tail of the last sector', TAIL_OFF, PRG_SIZE)]
-changed = []
-for name, lo, hi in allowed:
-    sel = [i for i in changed_bytes if lo <= i < hi]
-    if sel:
-        p('    %-24s allowed 0x%06X..0x%06X; %d differing bytes, first 0x%06X (RAM %08X), last 0x%06X (RAM %08X)'
-          % (name, lo, hi, len(sel), sel[0], PRG_RAM + sel[0], sel[-1], PRG_RAM + sel[-1]))
-        changed.append((sel[0], sel[-1] + 1))
-stray = [i for i in changed_bytes if not any(lo <= i < hi for _, lo, hi in allowed)]
-p('    differing bytes outside those three regions: %d' % len(stray))
-if stray:
-    fail('unexpected changes vs previous release at %s' % ', '.join('0x%X' % i for i in stray[:10]))
-if not changed:
-    fail('no changes vs previous release?')
-
+# ---- 5. disc image ---------------------------------------------------------------------------------------------
 p()
-p('-- 7. all other files under build/data identical to the build before the weapon mod')
-r = subprocess.run('diff -rq .baseline/data build/data', shell=True, text=True, capture_output=True, executable='/bin/bash')
-lines = [l for l in r.stdout.splitlines() if l]
-p('\n'.join(lines) if lines else '(no differences)')
-other = [l for l in lines if 'BATTLE/BATTLE.PRG' not in l]
-if other:
-    fail('other files differ: %s' % other)
-
-p()
-p('-- 8. disc image')
+p('-- 5. disc image')
 img = 'build/disks/SLUS-01040.bin'
 size = os.path.getsize(img)
 p('%s: %d bytes (expected 750643152): %s' % (img, size, 'ok' if size == 750643152 else 'BAD'))
-if size != 750643152:
+if size != 750643152 or os.path.getsize(prev_img) != 750643152:
     fail('image size')
 p('sha256:', hashlib.sha256(open(img, 'rb').read()).hexdigest())
-LBA = 1100  # BATTLE.PRG
-exp_sectors = set()
-for a, b in changed:
-    for s in range(a // 2048, (b - 1) // 2048 + 1):
-        exp_sectors.add(LBA + s)
-for name in ('[mod-weapons]', '[mod]'):
-    prev_img = IMG_DIR + 'Vagrant Story (USA) %s.bin' % name
-    if not os.path.exists(prev_img):
-        p('(%s image not found, skipped)' % name)
-        continue
-    a = open(img, 'rb')
-    b = open(prev_img, 'rb')
-    sec = 0
+
+# EDC / ECC (CD-ROM XA mode 2 form 1)
+EDC = []
+for i in range(256):
+    e = i
+    for _ in range(8):
+        e = (e >> 1) ^ (0xD8018001 if e & 1 else 0)
+    EDC.append(e)
+F = [0] * 256
+B = [0] * 256
+for i in range(256):
+    j = (i << 1) ^ (0x11D if i & 0x80 else 0)
+    F[i] = j & 0xFF
+    B[i ^ j & 0xFF] = i
+
+
+def edc(data):
+    c = 0
+    for x in data:
+        c = (c >> 8) ^ EDC[(c ^ x) & 0xFF]
+    return c
+
+
+def ecc(sector, major, minor, mult, inc, dest_off):
+    size = major * minor
+    res = bytearray(2 * major)
+    for m in range(major):
+        idx = (m >> 1) * mult + (m & 1)
+        a = b = 0
+        for _ in range(minor):
+            t = sector[12 + idx]
+            idx += inc
+            if idx >= size:
+                idx -= size
+            a ^= t
+            b ^= t
+            a = F[a]
+        a = B[F[a] ^ b]
+        res[m] = a
+        res[m + major] = a ^ b
+    return bytes(res)
+
+
+def check_sector(raw):
+    """True if EDC and ECC of a mode 2 form 1 sector are consistent"""
+    if raw[18] & 0x20:   # form 2: no ECC, optional EDC
+        return None
+    body = raw[16:16 + 8 + 2048]
+    if struct.unpack_from('<I', raw, 16 + 8 + 2048)[0] != edc(body):
+        return False
+    # ECC computed with the sector header zeroed (XA)
+    s = bytearray(raw)
+    s[12:16] = b'\0\0\0\0'
+    p_ = ecc(s, 86, 24, 2, 86, 0)
+    q_ = ecc(s, 52, 43, 86, 88, 0)
+    return raw[2076:2076 + 172] == p_ and raw[2076 + 172:2076 + 172 + 104] == q_
+
+
+with open(img, 'rb') as fa_, open(prev_img, 'rb') as fb_:
     bad = []
+    sec = 0
     while True:
-        x = a.read(2352)
-        y = b.read(2352)
+        x = fa_.read(2352)
+        y = fb_.read(2352)
         if not x:
             break
         if x != y:
             bad.append(sec)
         sec += 1
-    inside = [s for s in bad if LBA <= s < LBA + 283]
-    outside = [s for s in bad if not (LBA <= s < LBA + 283)]
-    p('against %s: %d of %d sectors differ; inside BATTLE.PRG [%d,%d): %s; outside: %s'
-      % (name, len(bad), sec, LBA, LBA + 283, inside, outside))
-    if name == '[mod-weapons]':
-        p('  expected sectors from the byte ranges in section 6(b): %s' % sorted(exp_sectors))
-        if set(bad) != exp_sectors:
-            fail('image differs from [mod-weapons] in unexpected sectors')
+inside = [s for s in bad if PRG_LBA <= s < PRG_LBA + PRG_SECTORS]
+outside = [s for s in bad if not (PRG_LBA <= s < PRG_LBA + PRG_SECTORS)]
+p('sectors: %d; differing from the previous image: %d (all inside BATTLE.PRG [%d,%d): %s)'
+  % (sec, len(bad), PRG_LBA, PRG_LBA + PRG_SECTORS, 'yes' if not outside else 'NO, outside: %s' % outside[:10]))
+if outside:
+    fail('image differs from the previous release outside BATTLE.PRG')
+with open(img, 'rb') as fa_, open(prev_img, 'rb') as fb_:
+    newf = bytearray()
+    prevf = bytearray()
+    edc_bad = []
+    edc_checked = 0
+    for s in range(PRG_LBA, PRG_LBA + PRG_SECTORS):
+        fa_.seek(s * 2352)
+        fb_.seek(s * 2352)
+        x = fa_.read(2352)
+        y = fb_.read(2352)
+        newf += x[24:24 + 2048]
+        prevf += y[24:24 + 2048]
+        if x != y:
+            r = check_sector(x)
+            edc_checked += 1
+            if r is False:
+                edc_bad.append(s)
+    r0 = check_sector(y)   # the checker itself on an untouched sector of the previous image
+    p('EDC/ECC of the %d changed sectors: %s (the checker accepts the previous image\'s last BATTLE.PRG sector: %s)'
+      % (edc_checked, 'all valid' if not edc_bad else 'INVALID %s' % edc_bad, r0))
+    if edc_bad or r0 is False:
+        fail('EDC/ECC')
+newf = bytes(newf)
+prevf = bytes(prevf)
+if newf != new_prg:
+    fail('BATTLE.PRG extracted from the image differs from build/data/BATTLE/BATTLE.PRG')
+else:
+    p('BATTLE.PRG extracted from the image (283 sectors) == build/data/BATTLE/BATTLE.PRG: ok')
 
-p()
-p('-- 9. weapon-hands table used by the blob (mask 0x1D4 >> (category-1)) vs vs_mainMenu_weaponHands in MAINMENU.PRG')
-mm = open('build/data/MENU/MAINMENU.PRG', 'rb').read()
-tbl = list(mm[0x80102140 - 0x800F9800:0x80102140 - 0x800F9800 + 10])
-mask = [(0x1D4 >> i) & 1 for i in range(10)]
-p('MAINMENU.PRG table :', tbl)
-p('blob mask         :', mask)
-if tbl != mask:
-    fail('weaponHands mismatch')
+p('(b) BATTLE.PRG of the previous image vs the new one: every changed byte range')
+cl = clusters(prevf, newf, gap=16)
+for a, b in cl:
+    names_ = sorted(set(region_of(i) for i in range(a, b)) - {None})
+    p('    0x%06X..0x%06X (RAM %08X..%08X, %4d bytes)  %s' % (a, b, a + PRG_RAM, b + PRG_RAM, b - a, ' / '.join(names_) or '???'))
+    if any(region_of(i) is None for i in range(a, b)):
+        fail('changed byte outside the allowed regions vs the previous image at 0x%X' % a)
+p('    total differing bytes: %d' % sum(1 for i in range(PRG_SIZE) if prevf[i] != newf[i]))
 
+# ---- 6. dead code ------------------------------------------------------------------------------------------------
 p()
-p('-- 10. func_800B26B8 is unreferenced (tools/mod/check_dead.py, scans every file of data/)')
+p('-- 6. every overwritten function is unreferenced (tools/mod/run_dead_checks.sh -> check_dead.py)')
 if os.environ.get('SKIP_DEAD_SCAN'):
     p('(skipped by SKIP_DEAD_SCAN)')
 else:
-    r = subprocess.run([sys.executable, '-I', 'tools/mod/check_dead.py', '800B26B8', '496', 'func_800B26B8'], capture_output=True, text=True)
+    r = subprocess.run(['bash', 'tools/mod/run_dead_checks.sh'], capture_output=True, text=True)
     p(r.stdout.strip())
     p(r.stderr.strip())
     if r.returncode != 0:
-        fail('func_800B26B8 is referenced')
+        fail('a range is referenced')
 
+# ---- 7. emulation -----------------------------------------------------------------------------------------------------
 p()
-p('-- 11. behavioural test of the shipped bytes in a MIPS interpreter (tools/mod/test_wswap.py)')
+p('-- 7. behavioural test of the shipped bytes in a MIPS interpreter (tools/mod/test_wswap.py)')
 r = subprocess.run([sys.executable, '-I', 'tools/mod/test_wswap.py'], capture_output=True, text=True)
 p(r.stdout.strip())
 p(r.stderr.strip())
 if r.returncode != 0:
     fail('emulator test')
+
+p()
+p('-- 8. full disassembly of the mod (objdump of build/mod/wswap.elf)')
+p(sh(CROSS + 'objdump -d ' + elf))
 
 p()
 p('RESULT:', 'ALL CHECKS PASSED' if ok else 'FAILURES PRESENT')

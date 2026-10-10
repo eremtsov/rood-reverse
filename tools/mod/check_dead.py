@@ -66,7 +66,7 @@ for dirpath, _, names in os.walk(os.path.join(ROOT, 'data')):
             elif start <= w < end:
                 if not inside(i * 4):
                     hits.append(('word', rel, i * 4, w))
-            elif op == 0x0F and 0x800E <= (w & 0xFFFF) <= 0x8010:
+            elif op == 0x0F and (start >> 16) <= (w & 0xFFFF) <= ((end - 1) >> 16) + 1:
                 hi = w & 0xFFFF
                 reg = (w >> 16) & 31
                 for j in range(1, 40):
