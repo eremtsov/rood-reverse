@@ -5,20 +5,17 @@ A small quality-of-life mod for **Vagrant Story (USA, SLUS-01040)**, built on th
 for my own play in an emulator. It is not part of rood-reverse and is not intended for
 upstream.
 
+It comes in two variants. Both have the same weapon quick swap and right-stick camera.
+They differ only in the button layout:
+
+| Variant | Button layout | Branch | Patch file |
+|---|---|---|---|
+| **Default** | western confirm/cancel (Cross confirms, Circle cancels) and mirrored field buttons | `qol-mod` | `Vagrant Story (USA) - QoL mod v2.xdelta` |
+| **Classic buttons** | the original layout (Circle confirms, Cross cancels, original field buttons) | `qol-mod-classic` | `Vagrant Story (USA) - QoL mod v2 (classic buttons).xdelta` |
+
 ## What it changes
 
-**Western confirm/cancel.** In all menus, dialogs, the title screen and save/load
-screens, Cross confirms and Circle cancels. The on-screen button icons are swapped to
-match. Battle inputs are not affected: chain abilities, defense abilities, L2 shortcuts
-and the ability-assignment menu keep their original buttons.
-
-**Mirrored field buttons**, so the field layout agrees with the menus:
-
-| Button | Weapon sheathed | Weapon drawn |
-|---|---|---|
-| Cross | draw weapon | attack |
-| Circle | interact with the world | interact if something is nearby, otherwise sheathe |
-| Square | jump (unchanged) | jump (unchanged) |
+### Both variants
 
 **Favorite-weapon quick swap.**
 
@@ -43,6 +40,28 @@ Requires the controller in **analog (DualShock) mode**. In DuckStation use *Anal
 Controller* with *Force Analog Mode on Reset*, and plain bindings (L1 = L1, R1 = R1,
 right stick = right stick).
 
+### Default variant only (branch `qol-mod`)
+
+**Western confirm/cancel.** In all menus, dialogs, the title screen and save/load
+screens, Cross confirms and Circle cancels. The on-screen button icons are swapped to
+match. Battle inputs are not affected: chain abilities, defense abilities, L2 shortcuts
+and the ability-assignment menu keep their original buttons.
+
+**Mirrored field buttons**, so the field layout agrees with the menus:
+
+| Button | Weapon sheathed | Weapon drawn |
+|---|---|---|
+| Cross | draw weapon | attack |
+| Circle | interact with the world | interact if something is nearby, otherwise sheathe |
+| Square | jump (unchanged) | jump (unchanged) |
+
+### Classic variant (branch `qol-mod-classic`)
+
+Every button keeps its original function: menus, dialogs, title and save screens, and
+the field and battle controls are exactly as in the unmodded game. Only the weapon quick
+swap and the right-stick camera are added. Besides `BATTLE.PRG`, no file on the disc
+differs from the original.
+
 ## Installing the patch
 
 You need your own dump of **Vagrant Story (USA)** as a single-track `.bin` + `.cue`:
@@ -50,15 +69,18 @@ You need your own dump of **Vagrant Story (USA)** as a single-track `.bin` + `.c
 | | SHA-1 |
 |---|---|
 | Original `.bin` | `38c63db6c49a06b91d87cd5a4e31b1ec68fe212c` |
-| Patched `.bin` | `e55a331f6c49c670c752fbc7dc7795cfe1d3810f` |
+| Patched `.bin`, default (`QoL mod v2.xdelta`) | `e55a331f6c49c670c752fbc7dc7795cfe1d3810f` |
+| Patched `.bin`, classic buttons (`QoL mod v2 (classic buttons).xdelta`) | `80679ddcadd7c3a07483155ec55c392fb5ce4b8f` |
 
-1. Get `Vagrant Story (USA) - QoL mod v2.xdelta` from the
-   [Releases](../../releases) page.
+1. Get the patch for the variant you want from the [Releases](../../releases) page:
+   `Vagrant Story (USA) - QoL mod v2.xdelta` (default) or
+   `Vagrant Story (USA) - QoL mod v2 (classic buttons).xdelta` (original buttons).
 2. Apply it to your `.bin` with any xdelta tool (xdelta UI, Delta Patcher, or
    `xdelta3 -d -s original.bin patch.xdelta patched.bin`).
 3. Copy your `.cue` next to the patched `.bin` and edit its `FILE` line to the new name.
 4. Use a separate memory card file for the modded image if you want to keep your
-   original saves untouched. The mod's save data is compatible either way.
+   original saves untouched. The mod's save data is compatible either way, and the two
+   variants share the same save format.
 
 Tested in DuckStation only, not on real hardware.
 
@@ -66,29 +88,35 @@ Tested in DuckStation only, not on real hardware.
 
 1. Set up rood-reverse as described in [README.md](README.md): Ubuntu/WSL, the listed
    packages, and your disc at `disks/SLUS-01040.bin`.
-2. Check out this branch, then run `tools/mod/build_mod.sh`.
+2. Check out the branch of the variant you want: `qol-mod` (default) or
+   `qol-mod-classic` (classic buttons). Then run `tools/mod/build_mod.sh`.
 3. The image is written to `build/disks/SLUS-01040.bin` / `.cue`.
 
-The normal `make` check reports mismatches for the modified overlays. That is expected,
-and the script carries on past it.
+The normal `make` check reports mismatches for the modified overlays on `qol-mod`
+(on `qol-mod-classic` only `BATTLE.PRG` is patched, after the normal build). That is
+expected, and the script carries on past it.
 
 To build the quick swap without the sheathe/draw animation, set `WSWAP_ANIM` to `0` in
 `src/mod/wswap.c`. That build fits entirely in free space and overwrites no game code.
+
+`qol-mod-classic` is `qol-mod` without the confirm/cancel and field-button commits: the
+weapon-swap commits sit directly on the decompilation base, and nothing under
+`src/MENU`, `src/TITLE`, `include/psx` or the button checks in `src/BATTLE` is changed.
 
 ## How it was made
 
 - **Base.** Built on noprompt's `decomp/verified-functions` branch
   ([PR #186](https://github.com/ser-pounce/rood-reverse/pull/186)), which has about
   97.5% of the game's code matched as C.
-- **Confirm/cancel and field buttons.** These are plain edits to the decompiled C: the
-  Circle and Cross masks are swapped (for example `0x20`/`0x40`) at each confirm/cancel
-  site, behind `VS_BUTTON_CONFIRM`/`VS_BUTTON_CANCEL` macros in
+- **Confirm/cancel and field buttons (default variant only).** These are plain edits to
+  the decompiled C: the Circle and Cross masks are swapped (for example `0x20`/`0x40`)
+  at each confirm/cancel site, behind `VS_BUTTON_CONFIRM`/`VS_BUTTON_CANCEL` macros in
   `include/psx/libetc.h`.
   - About 170 input sites were classified as confirm, cancel or gameplay first.
   - The rebuilt files differ from the original only in instruction immediates. No code
     moves, so every other file and every disc address stays identical.
-- **Weapon swap and camera.** This is new C code in `src/mod/wswap.c`, compiled with the
-  same GCC 2.8.1 the game uses and linked against the game's symbols.
+- **Weapon swap and camera (both variants).** This is new C code in `src/mod/wswap.c`,
+  compiled with the same GCC 2.8.1 the game uses and linked against the game's symbols.
   - **Hook:** one patched `jal` in `vs_battle_exec` sends the per-frame call to
     `vs_main_processPadState` through the mod.
   - **Swap sequence:** the mod repeats the equip menu's sequence (`vs_battle_equipWeapon`,
@@ -100,7 +128,10 @@ To build the quick swap without the sheathe/draw animation, set `WSWAP_ANIM` to 
     every file on the disc (`tools/mod/check_dead.py`).
 - **Verification.**
   - Byte diffs against the original: only the intended instructions and regions change,
-    and the `BATTLE.PRG` size on disc is unchanged.
+    and the `BATTLE.PRG` size on disc is unchanged. For the classic variant, the only
+    differences from the original disc data are the hook word (file offset `0x1111C`),
+    the `func_800B26B8` region (`0x49EB8..0x4A0A8`) and the tail from `0x8D124`; the
+    other 5162 files are byte-identical.
   - The shipped machine code also ran in a small MIPS interpreter with the game's
     functions stubbed (`tools/mod/test_wswap.py`).
   - The fuzzed runs passed millions of checks with no failures.
