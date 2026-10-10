@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Prove that nothing references an address range of BATTLE.PRG (default: func_800E1EAC).
 
-    python3 -I tools/mod/check_dead.py [START SIZE]     (hex start, decimal/hex size)
+    python3 -I tools/mod/check_dead.py [START SIZE [NAME]]   (hex start, decimal/hex size)
 
 Scans EVERY file under data/ (the original game files; 5163 of them) for
   * j / jal whose target lies in the range,
@@ -15,6 +15,14 @@ References coming from the range itself are ignored. The result is classified:
     GIM/SCREFF2.PRG, EFFECT/*.BIN.
     (TITLE.PRG and ENDING.PRG are loaded at the same address as BATTLE.PRG and never
     run together with it; every other file is data: video, audio, maps, models.)
+and, added after func_800E1EAC turned out to be live (it was reached by a PC-relative
+tail branch, `bgez $zero, func_800E1EAC` in func_800DB5B8, invisible to the scans above):
+  * PC-relative branches (beq/bne/blez/bgtz/bltz/bgez/bltzal/bgezal, including the
+    "b" idioms `beq $zero,$zero` / `bgez $zero`) whose target lies in the range, from
+    every co-resident file decoded at its load address (BATTLE.PRG: its code part),
+  * fall-through from the preceding function (it must end in `jr ra`+delay slot or `j`),
+  * with NAME: the name of the function must not occur anywhere else in src/ (C, headers,
+    assembly) and in build/src/ outside the function's own generated .s file.
 Exit code 0 when there is no real reference. Takes a few minutes.
 """
 import array
@@ -25,8 +33,9 @@ import sys
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
 BASE = 0x80068800
-start = int(sys.argv[1], 16) if len(sys.argv) > 1 else 0x800E1EAC
-size = int(sys.argv[2], 0) if len(sys.argv) > 2 else 1280
+start = int(sys.argv[1], 16) if len(sys.argv) > 1 else 0x800B26B8
+size = int(sys.argv[2], 0) if len(sys.argv) > 2 else 496
+fname = sys.argv[3] if len(sys.argv) > 3 else None
 end = start + size
 
 CO_RESIDENT = lambda rel: (rel in ('BATTLE/BATTLE.PRG', 'SLUS_010.40', 'BATTLE/INITBTL.PRG', 'GIM/SCREFF2.PRG')
@@ -85,6 +94,76 @@ for dirpath, _, names in os.walk(os.path.join(ROOT, 'data')):
                 if start <= v < end:
                     hits.append(('word-unaligned', rel, k, v))
 
+# ---- PC-relative branches ---------------------------------------------------------
+# load addresses of the files that can be resident together with BATTLE.PRG
+def load_base(rel):
+    if rel == 'BATTLE/BATTLE.PRG':
+        return BASE, 0x7F984          # code part only (data starts at file offset 0x7F984)
+    if rel == 'SLUS_010.40':
+        return 0x80010000 - 0x800, None
+    if rel in ('BATTLE/INITBTL.PRG', 'GIM/SCREFF2.PRG', 'MENU/MAINMENU.PRG') or (rel.startswith('EFFECT/') and rel.endswith('.BIN')):
+        return 0x800F9800, None
+    if rel.startswith('MENU/') and rel.endswith('.PRG'):
+        return 0x80102800, None
+    return None, None
+
+branch_hits = []
+nbr = 0
+for dirpath, _, names in os.walk(os.path.join(ROOT, 'data')):
+    for name in sorted(names):
+        rel = os.path.relpath(os.path.join(dirpath, name), os.path.join(ROOT, 'data')).replace(os.sep, '/')
+        base, limit = load_base(rel)
+        if base is None:
+            continue
+        data = open(os.path.join(dirpath, name), 'rb').read()
+        n = min(len(data), limit or len(data)) & ~3
+        words = array.array('I')
+        words.frombytes(data[:n])
+        if sys.byteorder != 'little':
+            words.byteswap()
+        nbr += 1
+        for i, w in enumerate(words):
+            op = w >> 26
+            if op in (4, 5, 6, 7) or (op == 1 and ((w >> 16) & 31) in (0, 1, 16, 17)):
+                simm = w & 0xFFFF
+                if simm & 0x8000:
+                    simm -= 0x10000
+                src = base + i * 4
+                t = src + 4 + simm * 4
+                if start <= t < end and not (start <= src < end):
+                    branch_hits.append((rel, i * 4, src, t))
+print('branch scan: %d co-resident files decoded at their load addresses' % nbr)
+print('PC-relative branches into the range from outside it: %d' % len(branch_hits))
+for h in branch_hits[:20]:
+    print('   BRANCH %-24s +0x%06X (RAM %08X) -> %08X' % h)
+
+# ---- fall-through from the previous function ------------------------------------------
+prg = open(os.path.join(ROOT, 'data/BATTLE/BATTLE.PRG'), 'rb').read()
+fallthrough = False
+if BASE <= start < BASE + 0x7F984:
+    pw = struct.unpack_from('<II', prg, start - BASE - 8)
+    ends = pw[0] == 0x03E00008 or (pw[0] >> 26) == 2
+    print('previous function ends with "%08X %08X": %s' % (pw[0], pw[1], 'jr ra / j + delay slot (no fall-through)' if ends else 'MAY FALL THROUGH'))
+    fallthrough = not ends
+
+# ---- name occurrences --------------------------------------------------------------------
+name_extra = []
+if fname:
+    pat = re.compile(r'(?<![A-Za-z0-9_])%s(?![A-Za-z0-9_])' % re.escape(fname))
+    for sub in ('src', 'build/src'):
+        for dirpath, _, names in os.walk(os.path.join(ROOT, sub)):
+            for nm_ in names:
+                if not nm_.endswith(('.c', '.h', '.s', '.inc')):
+                    continue
+                path = os.path.join(dirpath, nm_)
+                if sub == 'build/src' and nm_ == fname + '.s':
+                    continue
+                text = open(path, errors='replace').read()
+                c = len(pat.findall(text))
+                if c and not (sub == 'src' and nm_.endswith('.c') and c == 1):
+                    name_extra.append((os.path.relpath(path, ROOT), c))
+    print('occurrences of the name "%s" other than its one definition: %s' % (fname, name_extra or 'none'))
+
 print('scanned %d files for references into 0x%08X..0x%08X (%d bytes)' % (nfiles, start, end, size))
 # an unaligned match can only be a coincidence of neighbouring bytes (tables of pointers are 4-aligned)
 real = [h for h in hits if CO_RESIDENT(h[1]) and h[0] != 'word-unaligned']
@@ -107,5 +186,6 @@ for kind, rel, off, val in noise:
 print('noise by file type [hits, with a 4-aligned value, equal to the exact entry 0x%08X]:' % start)
 for key, e in sorted(by_ext.items()):
     print('   %-8s %s' % (key, e))
-print('RESULT:', 'NO REFERENCES (range is dead)' if not real else 'REFERENCED')
-sys.exit(1 if real else 0)
+bad = bool(real or branch_hits or fallthrough or name_extra)
+print('RESULT:', 'NO REFERENCES (range is dead)' if not bad else 'REFERENCED')
+sys.exit(1 if bad else 0)

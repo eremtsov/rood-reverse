@@ -42,9 +42,9 @@ PRG_SIZE = 579584
 HOOK_OFF = 0x1111C
 BLOB_RAM = 0x800F5924
 BLOB_LIMIT = 0x800F6000
-DEAD_RAM = 0x800E1EAC
+DEAD_RAM = 0x800B26B8
 DEAD_OFF = DEAD_RAM - PRG_RAM
-DEAD_SIZE = 1280
+DEAD_SIZE = 496
 IMG_DIR = '/mnt/d/Proj/Vagrant story/Vagrant Story Mod/'
 
 p('=' * 78)
@@ -61,12 +61,12 @@ p()
 p('-- 1. blob sizes')
 p('wswap.bin  (tail of BATTLE.PRG): %d bytes; RAM %08X..%08X; room %d bytes; free %d bytes'
   % (len(blob), BLOB_RAM, BLOB_RAM + len(blob), BLOB_LIMIT - BLOB_RAM, BLOB_LIMIT - BLOB_RAM - len(blob)))
-p('wswap2.bin (func_800E1EAC body): %d bytes; RAM %08X..%08X; room %d bytes; free %d bytes'
+p('wswap2.bin (func_800B26B8 body): %d bytes; RAM %08X..%08X; room %d bytes; free %d bytes'
   % (len(blob2), DEAD_RAM, DEAD_RAM + len(blob2), DEAD_SIZE, DEAD_SIZE - len(blob2)))
 if len(blob) > BLOB_LIMIT - BLOB_RAM:
     fail('tail blob too big')
 if len(blob2) > DEAD_SIZE:
-    fail('func_800E1EAC blob too big')
+    fail('func_800B26B8 blob too big')
 
 nm = sh(CROSS + 'nm -n build/mod/wswap.elf')
 syms = {}
@@ -81,7 +81,7 @@ for l in nm.splitlines():
 p('blob symbols:', ', '.join('%s=%08X' % kv for kv in sorted(syms.items(), key=lambda kv: kv[1])))
 entry = syms['wswap_entry']
 if syms['beginSwap'] != DEAD_RAM:
-    fail('beginSwap is not at the entry of func_800E1EAC')
+    fail('beginSwap is not at the entry of func_800B26B8')
 
 def in_blob(t):
     return BLOB_RAM <= t < BLOB_RAM + len(blob) or DEAD_RAM <= t < DEAD_RAM + len(blob2)
@@ -260,14 +260,14 @@ head = sorted(set(i & ~3 for i in diffs))
 inword = [i for i in head if i != HOOK_OFF and not (DEAD_OFF <= i < DEAD_OFF + len(blob2))]
 p('    differing bytes inside the old file extent: %d' % len(diffs))
 p('    hook word at 0x%X: %s' % (HOOK_OFF, 'differs' if HOOK_OFF in head else 'same'))
-p('    func_800E1EAC body 0x%X..0x%X (%d bytes): %d bytes differ from the original function'
+p('    func_800B26B8 body 0x%X..0x%X (%d bytes): %d bytes differ from the original function'
   % (DEAD_OFF, DEAD_OFF + len(blob2), len(blob2), sum(1 for i in diffs if DEAD_OFF <= i < DEAD_OFF + len(blob2))))
 if inword:
     fail('unexpected changes inside the old PRG body at %s' % ', '.join('0x%X' % i for i in inword))
 if new_prg[DEAD_OFF:DEAD_OFF + len(blob2)] != blob2:
-    fail('func_800E1EAC region does not hold wswap2.bin')
+    fail('func_800B26B8 region does not hold wswap2.bin')
 if new_prg[DEAD_OFF + len(blob2):DEAD_OFF + DEAD_SIZE] != base_prg[DEAD_OFF + len(blob2):DEAD_OFF + DEAD_SIZE]:
-    fail('rest of func_800E1EAC changed')
+    fail('rest of func_800B26B8 changed')
 tail = new_prg[len(base_prg):]
 tail_ok = tail[:len(blob)] == blob and not any(tail[len(blob):])
 p('    appended region 0x%X..0x%X (%d bytes): blob %d bytes at start, rest zero: %s'
@@ -279,7 +279,7 @@ p('(b) against the previous release ([mod-weapons], .baseline_v1/BATTLE.PRG, %d 
 if len(v1_prg) != PRG_SIZE:
     fail('v1 PRG size')
 changed_bytes = [i for i in range(PRG_SIZE) if v1_prg[i] != new_prg[i]]
-allowed = [('hook word', HOOK_OFF, HOOK_OFF + 4), ('func_800E1EAC body', DEAD_OFF, DEAD_OFF + DEAD_SIZE),
+allowed = [('hook word', HOOK_OFF, HOOK_OFF + 4), ('func_800B26B8 body', DEAD_OFF, DEAD_OFF + DEAD_SIZE),
            ('tail of the last sector', TAIL_OFF, PRG_SIZE)]
 changed = []
 for name, lo, hi in allowed:
@@ -354,15 +354,15 @@ if tbl != mask:
     fail('weaponHands mismatch')
 
 p()
-p('-- 10. func_800E1EAC is unreferenced (tools/mod/check_dead.py, scans every file of data/)')
+p('-- 10. func_800B26B8 is unreferenced (tools/mod/check_dead.py, scans every file of data/)')
 if os.environ.get('SKIP_DEAD_SCAN'):
     p('(skipped by SKIP_DEAD_SCAN)')
 else:
-    r = subprocess.run([sys.executable, '-I', 'tools/mod/check_dead.py'], capture_output=True, text=True)
+    r = subprocess.run([sys.executable, '-I', 'tools/mod/check_dead.py', '800B26B8', '496', 'func_800B26B8'], capture_output=True, text=True)
     p(r.stdout.strip())
     p(r.stderr.strip())
     if r.returncode != 0:
-        fail('func_800E1EAC is referenced')
+        fail('func_800B26B8 is referenced')
 
 p()
 p('-- 11. behavioural test of the shipped bytes in a MIPS interpreter (tools/mod/test_wswap.py)')

@@ -39,13 +39,18 @@ extern void vs_battle_playInvalidSfx(void);
 
 #define MSG_TICKS 150   /* how long the name stays up (1/60 s units, like the game's) */
 #define SHEATHE_TIMEOUT 90
+#ifndef WSWAP_ANIM
+#define WSWAP_ANIM 1
+#endif
 
 /* mod state, lives in the blob's own zero-initialised data */
 static int s_prev;    /* real buttons state of the previous frame */
 static int s_cam;     /* camera stick latch: -1, 0, 1 */
 static int s_loading; /* swap state machine: 0 idle, 1 waiting for the load queue, 2 sheathing */
+#if WSWAP_ANIM
 static int s_redraw;  /* draw the weapon again when the swap is done */
 static int s_wait;    /* frames left to wait for the sheathe animation */
+#endif
 static int s_msg;     /* ticks left for the weapon name box, 0 = not ours */
 static vs_main_inventoryWeapon* s_w; /* weapon being swapped to */
 
@@ -153,6 +158,7 @@ int wswap_entry(void)
 
     if (s_loading) {
         a = D_800F4538[0];
+#if WSWAP_ANIM
         if (D_800F196C == 0) {
             func_800B64A8(0, 0, 0); /* stand still, as the game does while (un)sheathing */
         } else if (s_loading == 2) {
@@ -165,6 +171,7 @@ int wswap_entry(void)
             }
             return ret;
         }
+#endif
         if (vs_battle_objectDataSlots[0].dataType != 0) {
             return ret;
         }
@@ -178,9 +185,12 @@ int wswap_entry(void)
         a->unkC54.unk540 = 0;
         func_8009D934(0, a->unk0.weaponDrawn, 2);
         if (D_800F196C == 0) {
+#if WSWAP_ANIM
             if (s_redraw) {
                 func_800734C0(); /* draw animation of the new weapon, mode 10 */
-            } else {
+            } else
+#endif
+            {
                 D_800F196C = 1;
             }
             box = &vs_battle_textBoxes[7];
@@ -258,6 +268,7 @@ int wswap_entry(void)
                 vs_battle_playInvalidSfx();
             } else {
                 vs_battle_playMenuChangeSfx();
+#if WSWAP_ANIM
                 s_redraw = vs_battle_characterState->weaponDrawn & 1;
                 if (s_redraw) {
                     /* drawn: sheathe first, with the game's own animation */
@@ -266,7 +277,9 @@ int wswap_entry(void)
                     s_w = &w[s];
                     s_wait = SHEATHE_TIMEOUT;
                     s_loading = 2;
-                } else {
+                } else
+#endif
+                {
                     beginSwap(&w[s]);
                 }
             }
