@@ -1,3 +1,5 @@
+> **This fork contains a personal QoL mod for Vagrant Story** (western confirm/cancel, favorite-weapon quick swap on L1/R1, camera on the right stick). See [MOD.md](MOD.md). It is not part of upstream rood-reverse.
+
 # Rood Reverse
 
 A decompilation project for Vagrant Story for PlayStation 1, with a goal of enabling interoperability with modern hardware and fixing bugs in the original game.
