@@ -18,6 +18,7 @@ import sys
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')
 BLOB_ADDR = 0x800F5924
+BLOB2_ADDR = 0x800E1EAC   # body of the unreferenced func_800E1EAC
 
 # ---- symbols ---------------------------------------------------------------
 SYM = {}
@@ -26,6 +27,10 @@ for line in open(os.path.join(ROOT, 'build/mod/syms.ld')):
     if m:
         SYM[m.group(1)] = int(m.group(2), 16)
 SYM['D_800F196C'] = 0x800F196C
+for line in open(os.path.join(ROOT, 'tools/mod/extra_syms.ld')):
+    m = re.match(r'(\w+) = (0x[0-9A-Fa-f]+);', line)
+    if m:
+        SYM[m.group(1)] = int(m.group(2), 16)
 nm = subprocess.check_output(['mipsel-linux-gnu-nm', os.path.join(ROOT, 'build/mod/wswap.elf')], text=True)
 SYMS_BLOB = {l.split()[2]: int(l.split()[0], 16) for l in nm.splitlines() if len(l.split()) == 3}
 ENTRY = int([l for l in nm.splitlines() if l.endswith(' wswap_entry')][0].split()[0], 16)
@@ -60,6 +65,25 @@ UNK48 = 0x80132000
 
 
 BLOB = open(os.path.join(ROOT, 'build/mod/wswap.bin'), 'rb').read()
+BLOB2 = open(os.path.join(ROOT, 'build/mod/wswap2.bin'), 'rb').read()
+
+# v2 layout additions (src/mod/test_offsets.c)
+A_ANIM = 0x5B8          # D_800F4538_t.animationId (u_char)
+A_DRAWN_WORD, A_DRAWN_BIT = 8, 23   # render-actor weaponDrawn bit
+CH_DRAWN = 0x20         # vs_battle_actor.weaponDrawn (int)
+TB = SYM['vs_battle_textBoxes']
+TB_SIZE, TB_STATE, TB_STRING = 0x30, 0x1C, 0x08
+TICK = SYM['vs_gametime_tickspeed']
+W_NAME = 8              # vs_main_inventoryWeapon.name
+
+
+def tb7_state():
+    return TB + 7 * TB_SIZE + TB_STATE
+
+
+ANIM_SHEATHE = 110     # drawn variant (+100) of animation 10: the render flag is still set when it starts
+MSG_TICKS = 150
+SHEATHE_TIMEOUT = 90
 
 
 class Halt(Exception):
@@ -72,8 +96,8 @@ class Machine:
         self.r = [0] * 32
         self.hi = self.lo = 0
         self.log = []
-        blob = open(os.path.join(ROOT, 'build/mod/wswap.bin'), 'rb').read()
-        self.w(BLOB_ADDR, blob, raw=True)
+        self.w(BLOB_ADDR, BLOB, raw=True)
+        self.w(BLOB2_ADDR, BLOB2, raw=True)
         self.stubs = {}
         self.setup_stubs()
         self.reset_world()
@@ -104,19 +128,27 @@ class Machine:
     def reset_world(self):
         self.mem[:] = bytes(len(self.mem))
         self.w(BLOB_ADDR, BLOB)
+        self.w(BLOB2_ADDR, BLOB2)
         self.wr(MODE, 1)
         self.wr(MENU, 0x3F, 1)
         self.wr(TRANS, 0)
         self.wr(CHSTATE + 0x3C, ACT2)
         self.wr(CHSTATE + 0x48, UNK48)
         self.wr(CHSTATE + 0x4C, UNK48 + 0x100)
-        self.wr(CHSTATE + 0x20, 1)  # weaponDrawn int (unused by blob)
+        self.wr(CHSTATE + CH_DRAWN, 0)  # weapon sheathed by default
         self.wr(CHAR, CHSTATE)
         self.wr(D4538, ACTOR)
         self.wr(ACTOR + A_5B1, 1)
         self.wr(ACT2 + 0x954, 0)
+        self.wr(TICK, 2)
+        self.wr(ACTOR + A_ANIM, 1, 1)
         self.status = 0
         self.busy = 0
+        self.sheathe_frames = 6    # frames the sheathe animation (id 10) lasts
+        self.draw_frames = 5       # frames the draw animation keeps mode 10
+        self.anim_left = 0
+        self.mode10_left = 0
+        self.toggle_starts_anim = True
         self.held = [0] * 32
         self.frame_hw = 0
         self.frame_stick = (128, 128)
@@ -199,11 +231,56 @@ class Machine:
         reg('vs_main_memcpy', lambda m: m.log.append(('memcpy', m.r[4] == ACTOR + 0x704, m.r[5] == ACTOR + 0xC54, m.r[6])))
         reg('func_8009D934', lambda m: m.log.append(('modelFlags', m.r[4], m.r[5], m.r[6])))
         reg('func_800A0BE0', lambda m: m.set_v0(m.status))
-        reg('func_8009E4B0', lambda m: m.set_v0(m.busy))
+        reg('func_8009E4B0', lambda m: m.set_v0(1 if (m.busy or m.rd(ACTOR + A_ANIM, 1) in (109, 110)) else 0))
         reg('vs_battle_playMenuChangeSfx', lambda m: m.log.append(('sfx', 'change')))
         reg('vs_battle_playMenuSelectSfx', lambda m: m.log.append(('sfx', 'select')))
         reg('vs_battle_playMenuLeaveSfx', lambda m: m.log.append(('sfx', 'leave')))
         reg('vs_battle_playInvalidSfx', lambda m: m.log.append(('sfx', 'invalid')))
+        reg('func_800B64A8', lambda m: m.log.append(('stand', m.r[4], m.r[5], m.r[6])))
+
+        def toggle(m):
+            """func_800734C0 -> func_8007C0AC(0, 2) + mode 10"""
+            drawn = m.rd(CHSTATE + CH_DRAWN) ^ 1
+            m.wr(CHSTATE + CH_DRAWN, drawn)
+            m.log.append(('toggle', drawn))
+            w8 = m.rd(ACTOR + A_DRAWN_WORD)
+            w8 = (w8 | (1 << A_DRAWN_BIT)) if drawn else (w8 & ~(1 << A_DRAWN_BIT))
+            m.wr(ACTOR + A_DRAWN_WORD, w8)
+            if m.toggle_starts_anim:
+                if drawn:
+                    m.wr(ACTOR + A_ANIM, 109, 1)
+                    m.mode10_left = m.draw_frames
+                else:
+                    m.wr(ACTOR + A_ANIM, ANIM_SHEATHE, 1)
+                    m.anim_left = m.sheathe_frames
+            m.wr(MODE, 10)
+        reg('func_800734C0', toggle)
+
+        def tb(i, off):
+            return TB + i * TB_SIZE + off
+
+        def init_info(m):
+            m.log.append(('initInfo', m.r[4]))
+            st = m.rd(tb(7, TB_STATE), 2)
+            if st == 0 or st & 0x8000:
+                m.wr(tb(7, TB_STATE), 1, 2)
+        reg('vs_battle_initInformationTextBox', init_info)
+
+        def set_text(m):
+            m.log.append(('setText', m.r[4], m.r[5]))
+            if m.r[5]:
+                m.wr(tb(m.r[4], TB_STRING), m.r[5])
+            m.set_v0(0)
+        reg('vs_battle_setTextBox', set_text)
+
+        def dismiss(m):
+            i = m.r[4]
+            m.log.append(('dismiss', i))
+            st = m.rd(tb(i, TB_STATE), 2)
+            if st != 0 and not st & 0x8000:
+                m.wr(tb(i, TB_STATE), 0xFFFF, 2)   # -1: closing
+            m.set_v0(-1 if st != 0 else 0)
+        reg('vs_battle_dismissTextBox', dismiss)
 
     def set_v0(self, v):
         self.r[2] = v & 0xFFFFFFFF
@@ -370,6 +447,22 @@ class Machine:
                     self.mem[self.off(Q + (i - 1) * Q_SIZE):self.off(Q + i * Q_SIZE)] =                         self.mem[self.off(Q + i * Q_SIZE):self.off(Q + (i + 1) * Q_SIZE)]
                 self.wr(Q + 14 * Q_SIZE, 0, 1)
                 self.loading = False
+        # actor animation: the sheathe animation (id 10) ends in the idle animation (id 1)
+        if self.anim_left > 0:
+            self.anim_left -= 1
+            if self.anim_left == 0 and self.rd(ACTOR + A_ANIM, 1) == ANIM_SHEATHE:
+                self.wr(ACTOR + A_ANIM, 1, 1)
+        # game mode 10 (draw / sheathe in the field): back to mode 1 when the animation is done
+        if self.rd(MODE) == 10:
+            if self.mode10_left > 0:
+                self.mode10_left -= 1
+            else:
+                self.wr(MODE, 1)
+                if self.rd(ACTOR + A_ANIM, 1) == 109:
+                    self.wr(ACTOR + A_ANIM, 101, 1)
+        # text box 7 closing animation
+        if self.rd(tb7_state(), 2) & 0x8000:
+            self.wr(tb7_state(), 0, 2)
         return self.rd(MODE)
 
     load_frames = 3
@@ -382,6 +475,10 @@ class Machine:
 # ---------------------------------------------------------------------------
 fails = 0
 checks = 0
+
+
+def nostand(log):
+    return [e for e in log if e[0] != 'stand']
 
 
 def check(cond, msg):
@@ -457,17 +554,20 @@ def test_swap_sequence():
     m.queue_wait = 8
     for _ in range(2):
         mode = m.frame(R1)
-        check(mode == 0 and not m.log, 'debounce while loading: %s' % m.log)
+        check(mode == 0 and not nostand(m.log) and ('stand', 0, 0, 0) in m.log, 'debounce while loading: %s' % m.log)
     # drain the queue
     for _ in range(20):
         mode = m.frame(0)
         if mode == 1:
             break
     check(mode == 1, 'world resumed after the queue drained')
-    names = [e[0] for e in m.log]
-    check(names == ['playAnim', 'pose', 'memcpy', 'modelFlags'], 'finish sequence %s' % names)
-    check(m.log[0][1:5] == (0, 1, 0, 0) and m.log[0][5] == 0, 'idle anim restart with unk187C cleared: %s' % (m.log[0],))
-    check(m.log[3][1] == 0 and m.log[3][3] == 2, 'model flags call')
+    log = nostand(m.log)
+    names = [e[0] for e in log]
+    check(names == ['playAnim', 'pose', 'memcpy', 'modelFlags', 'initInfo', 'setText'], 'finish sequence %s' % names)
+    check(log[0][1:5] == (0, 1, 0, 0) and log[0][5] == 0, 'idle anim restart with unk187C cleared: %s' % (log[0],))
+    check(log[3][1] == 0 and log[3][3] == 2, 'model flags call')
+    check(log[4] == ('initInfo', 0) and log[5][1:] == (7, INV + 1 * W_SIZE + W_NAME),
+          'name box: info box (no header), box 7, name of slot 1 : %s' % (log[4:],))
     check(m.rd(ACTOR + A_187C) == 0, 'unk187C forced to 0')
     # next swap: to the two-handed weapon (category changes 1 -> 3)
     m.log.clear()
@@ -687,6 +787,238 @@ def test_state_machine_extras():
     check(m.equipped() == [0], 'second swap works (back to slot 0)')
 
 
+def drawn_machine(favs=(0, 1, 2), cur=0, cats=None):
+    m = Machine()
+    m.setup_weapons(set(favs), cur, blade_cat=cats or {})
+    m.wr(CHSTATE + CH_DRAWN, 1)
+    m.wr(ACTOR + A_DRAWN_WORD, 1 << A_DRAWN_BIT)
+    m.wr(ACTOR + A_ANIM, 101, 1)
+    m.frame(0)
+    m.log.clear()
+    return m
+
+
+def run_until(m, pred, limit=400, hw=0):
+    """frames until pred(m) (checked after each frame); returns the number of frames or None"""
+    for n in range(1, limit + 1):
+        m.frame(hw)
+        if pred(m):
+            return n
+    return None
+
+
+def index_of(log, name, *args, start=0):
+    for i in range(start, len(log)):
+        if log[i][0] == name and log[i][1:1 + len(args)] == args:
+            return i
+    return -1
+
+
+def test_drawn_sequence():
+    S_LOAD = SYMS_BLOB['s_loading']
+    # --- drawn weapon: sheathe, swap while sheathed, draw again, name box
+    m = drawn_machine(cats={0: 1, 1: 1, 2: 3})
+    equip_anim = []
+    orig = m.stubs[SYM['vs_battle_equipWeapon']]
+
+    def spy(mm):
+        equip_anim.append(mm.rd(ACTOR + A_ANIM, 1))
+        orig[1](mm)
+    m.stubs[SYM['vs_battle_equipWeapon']] = (orig[0], spy)
+    mode = m.frame(R1)
+    log = nostand(m.log)
+    check(mode == 0 and m.rd(S_LOAD) == 2, 'press with drawn weapon: world held, sheathing state (mode %d)' % mode)
+    check([e[0] for e in log] == ['sfx', 'toggle'] and log[1] == ('toggle', 0),
+          'press frame: change sound then the game toggle (sheathe) only: %s' % (log,))
+    check(m.equipped() == [0], 'weapon not swapped yet while the sheathe animation plays')
+    check(m.rd(ACTOR + A_ANIM, 1) == ANIM_SHEATHE or m.rd(ACTOR + A_ANIM, 1) == 1, 'sheathe animation id')
+    n = run_until(m, lambda mm: mm.equipped() == [1])
+    check(n is not None and n <= m.sheathe_frames + 2, 'swap starts when the sheathe animation ended (%s frames, anim %d)' % (n, m.sheathe_frames))
+    check(equip_anim == [1], 'equipWeapon runs when the animation id is back to idle 1, not 10: %s' % equip_anim)
+    log = nostand(m.log)
+    check(index_of(log, 'sfx') < index_of(log, 'toggle') < index_of(log, 'equipWeapon'), 'order sfx < sheathe < equip: %s' % (log,))
+    check(sum(1 for e in m.log if e[0] == 'stand') >= m.sheathe_frames - 1, 'actor held still during the sheathe wait')
+    check(all(e == ('stand', 0, 0, 0) for e in m.log if e[0] == 'stand'), 'stand call args')
+    check(m.rd(MODE) == 0 and m.rd(S_LOAD) == 1, 'loading state after the sheathe wait')
+    # let the loads finish
+    n = run_until(m, lambda mm: mm.rd(S_LOAD) == 0)
+    check(n is not None, 'sequence finishes')
+    log = nostand(m.log)
+    names = [e[0] for e in log]
+    i_mf = index_of(log, 'modelFlags')
+    i_tg = index_of(log, 'toggle', 1)
+    i_in = index_of(log, 'initInfo')
+    i_st = index_of(log, 'setText')
+    check(log[i_mf][1:] == (0, 0, 2), 'model flags set with the sheathed state before the draw: %s' % (log[i_mf],))
+    check(index_of(log, 'playAnim') < i_mf < i_tg < i_in < i_st, 'finish order idle anim < flags < draw < name box: %s' % names)
+    check(names.count('toggle') == 2 and names.count('setText') == 1 and names.count('initInfo') == 1,
+          'exactly one sheathe, one draw, one name box per swap: %s' % names)
+    check(log[i_st][1:] == (7, INV + 1 * W_SIZE + W_NAME), 'name pointer = weapons[1].name')
+    check(m.rd(MODE) == 10 and m.rd(CHSTATE + CH_DRAWN) == 1, 'draw animation running (mode 10), weapon drawn again')
+    n = run_until(m, lambda mm: mm.rd(MODE) == 1)
+    check(n is not None and n <= m.draw_frames + 2, 'game mode 10 hands back to mode 1 by itself')
+    check(m.rd(ACTOR + A_DRAWN_WORD) >> A_DRAWN_BIT & 1 == 1, 'render flag drawn')
+    # --- the next swap works the same way (category change 1 -> 3)
+    m.log.clear()
+    m.frame(R1)
+    check(m.rd(S_LOAD) == 2 and ('toggle', 0) in m.log, 'second swap also starts with the sheathe')
+    n = run_until(m, lambda mm: mm.rd(S_LOAD) == 0)
+    names = [e[0] for e in nostand(m.log)]
+    check(m.equipped() == [2] and ('freeCategory', 0, 0) in m.log and names.count('setText') == 1,
+          'second swap done, category change handled: %s' % names)
+    run_until(m, lambda mm: mm.rd(MODE) == 1)
+
+    # --- sheathed weapon: silent swap, no toggle, still the name box
+    m = Machine()
+    m.setup_weapons({0, 1}, 0)
+    m.frame(0)
+    m.log.clear()
+    m.frame(R1)
+    check(m.rd(S_LOAD) == 1 and m.rd(MODE) == 0, 'sheathed: swap starts at once')
+    run_until(m, lambda mm: mm.rd(S_LOAD) == 0)
+    names = [e[0] for e in nostand(m.log)]
+    check('toggle' not in names and names.count('setText') == 1 and m.rd(MODE) == 1,
+          'sheathed swap: no sheathe/draw, one name box, mode 1: %s' % names)
+
+    # --- invalid press: no name box
+    m = Machine()
+    m.setup_weapons({0}, 0)
+    m.frame(0)
+    m.log.clear()
+    m.frame(R1)
+    check(('sfx', 'invalid') in m.log and not any(e[0] in ('setText', 'initInfo', 'toggle') for e in m.log), 'invalid press: no text, no animation')
+
+
+def test_drawn_edge_cases():
+    S_LOAD = SYMS_BLOB['s_loading']
+    S_MSG = SYMS_BLOB['s_msg']
+    # sheathe animation that never ends: the timeout starts the swap
+    m = drawn_machine()
+    m.sheathe_frames = 10 ** 6
+    m.frame(R1)
+    n = run_until(m, lambda mm: mm.equipped() == [1], limit=300)
+    check(n is not None and SHEATHE_TIMEOUT - 3 <= n <= SHEATHE_TIMEOUT + 2, 'sheathe timeout: swap after %s frames' % n)
+    # animation never started (locked): swap right on the next frame
+    m = drawn_machine()
+    m.toggle_starts_anim = False
+    m.frame(R1)
+    n = run_until(m, lambda mm: mm.equipped() == [1])
+    check(n == 1, 'no sheathe animation running: swap on the next frame (%s)' % n)
+    run_until(m, lambda mm: mm.rd(S_LOAD) == 0)
+    check(m.rd(MODE) in (1, 10), 'finished')
+    # something takes the world over during the sheathe: give up cleanly
+    for newmode in (1, 2, 5, 7, 8, 11):
+        m = drawn_machine()
+        m.sheathe_frames = 20
+        m.frame(R1)
+        m.frame(0)
+        m.wr(MODE, newmode)
+        m.log.clear()
+        for _ in range(40):
+            m.frame(0)
+        check(m.rd(S_LOAD) == 0 and m.equipped() == [0] and m.rd(MODE) == newmode,
+              'interrupted sheathe (mode %d): state cleared, no swap, mode untouched' % newmode)
+        check(not any(e[0] in ('equipWeapon', 'toggle', 'setText', 'stand') for e in m.log), 'interrupted sheathe: nothing more happens %s' % nostand(m.log))
+    # interruption while the load queue is draining: no draw, no name box, mode untouched
+    m = drawn_machine()
+    m.load_frames = 12
+    m.frame(R1)
+    run_until(m, lambda mm: mm.equipped() == [1])
+    m.wr(MODE, 8)
+    m.log.clear()
+    run_until(m, lambda mm: mm.rd(S_LOAD) == 0)
+    names = [e[0] for e in nostand(m.log)]
+    check(m.rd(MODE) == 8 and 'toggle' not in names and 'setText' not in names,
+          'interrupted load: finishes the pose refresh only (%s), mode stays 8' % names)
+    # the player cannot start another swap in mode 10 right after the draw
+    m = drawn_machine()
+    m.frame(R1)
+    run_until(m, lambda mm: mm.rd(MODE) == 10)
+    m.log.clear()
+    m.frame(R1)
+    check(m.rd(MODE) in (10, 1) and m.equipped() == [1] and not any(e[0] == 'equipWeapon' for e in m.log), 'press during the draw ignored')
+
+    # ---- name box lifecycle
+    def swapped():
+        mm = Machine()
+        mm.setup_weapons({0, 1, 2}, 0)
+        mm.frame(0)
+        mm.frame(R1)
+        run_until(mm, lambda x: x.rd(S_LOAD) == 0)
+        mm.log.clear()
+        return mm
+    m = swapped()
+    check(m.rd(S_MSG) == MSG_TICKS and m.rd(tb7_state(), 2) == 1, 'name box up with a full timer')
+    box_str = m.rd(TB + 7 * TB_SIZE + TB_STRING)
+    check(box_str == INV + W_NAME + W_SIZE, 'box string points to weapons[1].name')
+    frames = 0
+    while m.rd(S_MSG) and frames < 500:
+        m.frame(0)
+        frames += 1
+        if m.rd(S_MSG):
+            check(not any(e[0] == 'dismiss' for e in m.log), 'no early dismiss')
+    check(frames == MSG_TICKS // 2 and m.log.count(('dismiss', 7)) == 1, 'dismissed once after %d frames (tick 2)' % frames)
+    m.log.clear()
+    for _ in range(10):
+        m.frame(0)
+    check(not m.log, 'nothing more happens afterwards')
+    # tick speed 4: half the frames
+    m = swapped()
+    m.wr(TICK, 4)
+    frames = 0
+    while m.rd(S_MSG) and frames < 500:
+        m.frame(0)
+        frames += 1
+    check(frames == (MSG_TICKS + 3) // 4, 'tickspeed 4: dismissed after %d frames' % frames)
+    # the game took the box: leave it alone
+    m = swapped()
+    m.wr(TB + 7 * TB_SIZE + TB_STRING, 0x80100000)
+    m.frame(0)
+    check(m.rd(S_MSG) == 0 and not m.log, 'game owns box 7: timer dropped, no dismiss: %s' % m.log)
+    m = swapped()
+    m.wr(TB + 7 * TB_SIZE + TB_STRING, 0)
+    m.frame(0)
+    check(m.rd(S_MSG) == 0 and not m.log, 'NULL string: not ours')
+    # menu opens while the name is up: dismissed at once
+    m = swapped()
+    m.wr(MENU, 0x00)
+    m.frame(0)
+    check(m.log.count(('dismiss', 7)) == 1 and m.rd(S_MSG) == 0, 'menu opened: name box dismissed once')
+    # the game uses box 7 when the swap finishes: no name box
+    m = Machine()
+    m.setup_weapons({0, 1}, 0)
+    m.frame(0)
+    m.wr(tb7_state(), 1, 2)
+    m.wr(TB + 7 * TB_SIZE + TB_STRING, 0x80100000)
+    m.frame(R1)
+    run_until(m, lambda x: x.rd(S_LOAD) == 0)
+    check(not any(e[0] in ('initInfo', 'setText', 'dismiss') for e in m.log) and m.rd(S_MSG) == 0,
+          'busy box 7 (game text) is not touched: %s' % nostand(m.log))
+    check(m.rd(TB + 7 * TB_SIZE + TB_STRING) == 0x80100000, 'game string intact')
+    # closing animation still running (state < 0): not touched either
+    m = Machine()
+    m.setup_weapons({0, 1}, 0)
+    m.frame(0)
+    m.wr(tb7_state(), 0xFFFF, 2)
+    m.frame(R1)
+    check(m.rd(S_LOAD) == 1, 'swap started')
+    # (the stub clears the closing state in the next frame, so the box is free again when the swap finishes)
+    run_until(m, lambda x: x.rd(S_LOAD) == 0)
+    check(sum(1 for e in m.log if e[0] == 'setText') == 1, 'free after closing: one name box')
+    # a second swap while our name is still up replaces it
+    m = swapped()
+    for _ in range(5):
+        m.frame(0)
+    m.log.clear()
+    m.frame(R1)
+    run_until(m, lambda x: x.rd(S_LOAD) == 0)
+    log = nostand(m.log)
+    check(sum(1 for e in log if e[0] == 'setText') == 1 and m.rd(S_MSG) == MSG_TICKS
+          and m.rd(TB + 7 * TB_SIZE + TB_STRING) == INV + 2 * W_SIZE + W_NAME,
+          'second swap replaces the name: %s' % (log,))
+    check(not any(e[0] == 'dismiss' for e in log), 'no dismiss of our own box on replace')
+
+
 def test_fuzz(seed=1, frames=60000):
     import random
     rnd = random.Random(seed)
@@ -709,6 +1041,17 @@ def test_fuzz(seed=1, frames=60000):
             m.status = rnd.choice([0, 0, 0, 0x2000, 0x4000, 0x8000])
             m.busy = rnd.choice([0, 0, 0, 1])
             m.wr(ACT2 + 0x954, rnd.choice([0, 0, 0, 3]), 2)
+        if not loading and rnd.random() < 0.3:
+            dr = rnd.choice([0, 1])
+            m.wr(CHSTATE + CH_DRAWN, dr)
+            m.wr(ACTOR + A_DRAWN_WORD, dr << A_DRAWN_BIT)
+            m.wr(ACTOR + A_ANIM, 101 if dr else 1, 1)
+            m.sheathe_frames = rnd.choice([0, 1, 3, 6, 200])
+            m.draw_frames = rnd.choice([0, 3, 8])
+            m.toggle_starts_anim = rnd.random() < 0.8
+            if rnd.random() < 0.3:
+                m.wr(TB + 7 * TB_SIZE + TB_STATE, rnd.choice([0, 1, 1, 0xFFFF]), 2)
+                m.wr(TB + 7 * TB_SIZE + TB_STRING, rnd.choice([0, 0x80100000, INV + 8, INV + 0x28]))
         if rnd.random() < 0.3:
             hw = 0
             for bit in (L2, R2, L1, R1, TRI, CIR, CRS, SQR, SELECT, START):
@@ -729,6 +1072,12 @@ def test_fuzz(seed=1, frames=60000):
             return
         eq = m.equipped()
         check(len(eq) <= 1, 'fuzz: more than one weapon equipped %s' % eq)
+        ev = [e[0] for e in m.log]
+        check(ev.count('initInfo') == ev.count('setText') <= 1, 'fuzz: name box calls unbalanced %s' % ev)
+        check(ev.count('toggle') <= 1, 'fuzz: two toggles in one frame')
+        check(m.rd(s_loading) in (0, 1, 2), 'fuzz: state value')
+        if m.rd(s_loading) == 2:
+            check(m.rd(MODE) == 0, 'fuzz: sheathing state outside mode 0')
         now_loading = m.rd(s_loading) != 0
         if now_loading:
             frozen_frames += 1
@@ -764,6 +1113,8 @@ if __name__ == '__main__':
     test_camera()
     test_favourite()
     test_state_machine_extras()
+    test_drawn_sequence()
+    test_drawn_edge_cases()
     for seed in range(1, 6):
         test_fuzz(seed)
     print('%d checks, %d failures' % (checks, fails))

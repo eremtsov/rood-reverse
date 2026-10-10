@@ -6,6 +6,8 @@
 #include "src/BATTLE/BATTLE.PRG/30DB0.h"
 #include "src/BATTLE/BATTLE.PRG/3A1A0.h"
 #include "src/BATTLE/BATTLE.PRG/44F14.h"
+#include "src/BATTLE/BATTLE.PRG/4A0A8.h"
+#include "src/BATTLE/BATTLE.PRG/5BF94.h"
 #define OFF(t, f) ((int)&((t*)0)->f)
 int offsets[] = {
     sizeof(vs_main_inventoryWeapon), OFF(vs_main_inventoryWeapon, blade), OFF(vs_main_inventoryWeapon, isEquipped), OFF(vs_main_inventoryWeapon, gems),
@@ -18,4 +20,8 @@ int offsets[] = {
     sizeof(D_800F4538_unkC54), OFF(D_800F4538_unkC54, unk540),
     OFF(vs_battle_actor, unk3C), OFF(vs_battle_actor, unk48), OFF(vs_battle_actor2, unk954),
     sizeof(vs_main_stickPos),
+    /* v2 additions: animationId, weaponDrawn (actor struct + render struct), text box */
+    OFF(D_800F4538_t, animationId), OFF(vs_battle_actor, weaponDrawn),
+    sizeof(vs_battle_textBox), OFF(vs_battle_textBox, state), OFF(vs_battle_textBox, string),
+    OFF(vs_battle_actor, unk3C),
 };

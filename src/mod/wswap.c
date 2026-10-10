@@ -2,14 +2,19 @@
  * Personal mod: favourite-weapon quick swap on L1/R1 + camera on the right stick.
  *
  * This unit is NOT part of the matching decompilation. It is compiled with the
- * BATTLE.PRG toolchain, linked at 0x800F5924 (zero tail of BATTLE.PRG) by
- * tools/mod/build_mod.sh and entered through a patched `jal` in vs_battle_exec
- * (the call to vs_main_processPadState).
+ * BATTLE.PRG toolchain, linked by tools/mod/build_mod.sh and entered through a
+ * patched `jal` in vs_battle_exec (the call to vs_main_processPadState).
  *
  * Controls (field only, never while a menu is open):
  *   R1 / L1            next / previous favourite weapon (cycle, slot order)
  *   R2 (held) + Select toggle favourite mark on the equipped weapon
  *   right stick X      camera rotation: right = old L1, left = old R1
+ *
+ * A swap with the weapon drawn plays the game's own sheathe animation first
+ * (func_800734C0, the Circle button), waits until func_8009E4B0 says the actor is
+ * no longer busy, swaps while the world is held (mode 0), then plays the draw animation.
+ * With the weapon sheathed the swap is silent. When it is done the name of the
+ * new weapon is shown for a moment in the information text box (box 7).
  *
  * Favourite mark: vs_main_inventory.weapons[i].gems[3] == 1 (unused byte).
  */
@@ -19,21 +24,30 @@
 #include "src/BATTLE/BATTLE.PRG/30DB0.h"
 #include "src/BATTLE/BATTLE.PRG/3A1A0.h"
 #include "src/BATTLE/BATTLE.PRG/44F14.h"
+#include "src/BATTLE/BATTLE.PRG/4A0A8.h"
 #include "src/BATTLE/BATTLE.PRG/5BF94.h"
 #include <libetc.h>
 
 extern u_int D_800F196C;
 extern int vs_main_processPadState(void);
 extern int func_8009E4B0(int);
+extern void func_800734C0(void); /* toggle draw/sheathe (Circle / Cross in the field) */
 extern void vs_battle_playMenuChangeSfx(void);
 extern void vs_battle_playMenuSelectSfx(void);
 extern void vs_battle_playMenuLeaveSfx(void);
 extern void vs_battle_playInvalidSfx(void);
 
+#define MSG_TICKS 150   /* how long the name stays up (1/60 s units, like the game's) */
+#define SHEATHE_TIMEOUT 90
+
 /* mod state, lives in the blob's own zero-initialised data */
 static int s_prev;    /* real buttons state of the previous frame */
 static int s_cam;     /* camera stick latch: -1, 0, 1 */
-static int s_loading; /* swap state machine: 0 idle, 1 waiting for the load queue */
+static int s_loading; /* swap state machine: 0 idle, 1 waiting for the load queue, 2 sheathing */
+static int s_redraw;  /* draw the weapon again when the swap is done */
+static int s_wait;    /* frames left to wait for the sheathe animation */
+static int s_msg;     /* ticks left for the weapon name box, 0 = not ours */
+static vs_main_inventoryWeapon* s_w; /* weapon being swapped to */
 
 /* index of the equipped weapon slot, or -1 */
 static int equippedSlot(void)
@@ -52,6 +66,7 @@ static int equippedSlot(void)
 
 /* Same sequence as the equip menu (MENU3.PRG _equipWeaponMenu + _loadObjectData),
  * applied to the real actor 0. The load queue is processed by the main loop. */
+__asm__(".section .wswap2,\"ax\",@progbits");
 static void beginSwap(vs_main_inventoryWeapon* w)
 {
     vs_main_inventoryBlade* b = &vs_main_inventory.blades[w->blade - 1];
@@ -98,9 +113,11 @@ static void beginSwap(vs_main_inventoryWeapon* w)
         q->material = b->material;
     }
 
+    s_w = w;
     D_800F196C = 0; /* freeze the world like the menu does (case 0 does nothing) */
     s_loading = 1;
 }
+__asm__(".text");
 
 int wswap_entry(void)
 {
@@ -116,19 +133,44 @@ int wswap_entry(void)
     int s;
     vs_main_inventoryWeapon* w;
     D_800F4538_t* a;
+    vs_battle_textBox* box;
 
     vs_main_buttonsPreviousState = s_prev;
     ret = vs_main_processPadState();
     s_prev = vs_main_buttonsState;
 
+    /* weapon name box: ours only while box 7 still points at an inventory name */
+    if (s_msg) {
+        box = &vs_battle_textBoxes[7];
+        if ((u_int)(box->string - (char*)vs_main_inventory.weapons) >= 8 * 0x20) {
+            s_msg = 0; /* the game took the box over */
+        } else if (((vs_battle_menuState.currentMenu & 0x3F) != 0x3F)
+                   || ((s_msg -= vs_gametime_tickspeed) <= 0)) {
+            vs_battle_dismissTextBox(7);
+            s_msg = 0;
+        }
+    }
+
     if (s_loading) {
+        a = D_800F4538[0];
+        if (D_800F196C == 0) {
+            func_800B64A8(0, 0, 0); /* stand still, as the game does while (un)sheathing */
+        } else if (s_loading == 2) {
+            s_loading = 0; /* something else took over the world: give up */
+            return ret;
+        }
+        if (s_loading == 2) {
+            if ((func_8009E4B0(0) == 0) || (--s_wait <= 0)) {
+                beginSwap(s_w);
+            }
+            return ret;
+        }
         if (vs_battle_objectDataSlots[0].dataType != 0) {
             return ret;
         }
         /* queue drained: restart the idle animation on the (possibly new)
          * category animation table and refresh the pose and the model flags,
          * as func_800FA2CC does after the menu changed the weapon */
-        a = D_800F4538[0];
         a->unk187C = 0;
         func_800A0204(0, 1, 0, 0);
         func_800AFA28(a, &a->unkC54, 1);
@@ -136,7 +178,17 @@ int wswap_entry(void)
         a->unkC54.unk540 = 0;
         func_8009D934(0, a->unk0.weaponDrawn, 2);
         if (D_800F196C == 0) {
-            D_800F196C = 1;
+            if (s_redraw) {
+                func_800734C0(); /* draw animation of the new weapon, mode 10 */
+            } else {
+                D_800F196C = 1;
+            }
+            box = &vs_battle_textBoxes[7];
+            if ((box->state == 0) || s_msg) {
+                vs_battle_initInformationTextBox(informationTextBoxHeaderNone);
+                vs_battle_setTextBox(7, s_w->name);
+                s_msg = MSG_TICKS;
+            }
         }
         s_loading = 0;
     }
@@ -206,7 +258,17 @@ int wswap_entry(void)
                 vs_battle_playInvalidSfx();
             } else {
                 vs_battle_playMenuChangeSfx();
-                beginSwap(&w[s]);
+                s_redraw = vs_battle_characterState->weaponDrawn & 1;
+                if (s_redraw) {
+                    /* drawn: sheathe first, with the game's own animation */
+                    func_800734C0();
+                    D_800F196C = 0;
+                    s_w = &w[s];
+                    s_wait = SHEATHE_TIMEOUT;
+                    s_loading = 2;
+                } else {
+                    beginSwap(&w[s]);
+                }
             }
         }
     }
