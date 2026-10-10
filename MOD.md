@@ -17,20 +17,33 @@ They differ only in the button layout:
 
 ### Both variants
 
-**Favorite-weapon quick swap.**
+**Weapon slots.** Eight weapon slots, numbered like the L2 shortcuts: 1 Circle,
+2 Triangle, 3 Square, 4 Cross, 5 D-pad Up, 6 Down, 7 Right, 8 Left. A slot holds one
+weapon; a weapon sits in at most one slot.
 
-- **R2 + Select:** add the equipped weapon to your favorites, or remove it. A different
-  sound plays for added and removed.
-- **R1 / L1:** switch to the next / previous favorite, in inventory order. Up to 8
-  favorites.
+- **Hold L2 + R2** in the field: the L2 shortcut overlay slides in, but each of its eight
+  positions shows the name of the weapon in that slot (`--` for an empty slot, the
+  equipped weapon highlighted). **Press a slot button** to equip that weapon: Ashley
+  sheathes and draws it with the game's own animations and the weapon's name pops up.
+  Slots 5 to 8 only react to the physical D-pad, never to the left stick.
+- **Select** (while holding L2 + R2): assign mode. A hint line at the bottom shows
+  `SELECT: ASSIGN`; after the press the labels turn orange and it reads
+  `ASSIGN: PRESS A SLOT`. The next slot button puts the **equipped** weapon into that
+  slot (it moves if it was in another slot; pressing the slot it is already in clears
+  it), then assign mode switches off. Letting go of L2 or R2 also switches it off.
+- **R2 + Select** (without L2): put the equipped weapon into the first free slot, or
+  clear its slot.
+- **R1 / L1:** switch to the next / previous assigned weapon, in slot order.
 - **On screen:** the weapon's name appears in the bottom information bar for about
   2.5 s. With the weapon drawn, Ashley sheathes the old weapon and draws the new one
   using the game's own animations.
 - **Safety:** swaps only happen at safe moments: not in menus or cutscenes, not
   mid-attack or during chain-ability timing, and not while something is loading. A press
   at any other time is ignored.
-- **Saved with your game:** favorites are stored in an unused byte of the weapon record
-  (the 4th gem slot, which no grip uses). Saves from the unmodded game work as they are.
+- **Saved with your game:** the slot (1 to 8, 0 = none) is stored in an unused byte of
+  the weapon record (the 4th gem slot, which no grip uses). Saves from the unmodded game
+  work as they are. A save from the previous version of the mod (several "favorites")
+  is converted automatically: the favorites get slots 1, 2, 3 ... in inventory order.
 
 **Camera on the right stick.** In the field, pushing the right stick left/right
 rotates the camera, replacing L1/R1. Stick right does what L1 did. The stick no longer
@@ -96,9 +109,6 @@ The normal `make` check reports mismatches for the modified overlays on `qol-mod
 (on `qol-mod-classic` only `BATTLE.PRG` is patched, after the normal build). That is
 expected, and the script carries on past it.
 
-To build the quick swap without the sheathe/draw animation, set `WSWAP_ANIM` to `0` in
-`src/mod/wswap.c`. That build fits entirely in free space and overwrites no game code.
-
 `qol-mod-classic` is `qol-mod` without the confirm/cancel and field-button commits: the
 weapon-swap commits sit directly on the decompilation base, and nothing under
 `src/MENU`, `src/TITLE`, `include/psx` or the button checks in `src/BATTLE` is changed.
@@ -117,20 +127,26 @@ weapon-swap commits sit directly on the decompilation base, and nothing under
     moves, so every other file and every disc address stays identical.
 - **Weapon swap and camera (both variants).** This is new C code in `src/mod/wswap.c`,
   compiled with the same GCC 2.8.1 the game uses and linked against the game's symbols.
-  - **Hook:** one patched `jal` in `vs_battle_exec` sends the per-frame call to
-    `vs_main_processPadState` through the mod.
+  - **Hooks:** one patched `jal` in `vs_battle_exec` sends the per-frame call to
+    `vs_main_processPadState` through the mod. Two more patched `jal` in the L2 overlay
+    drawing function replace the question "is this label available?" with a mod function
+    that prints the weapon names (the game's labels are pictures, not text).
   - **Swap sequence:** the mod repeats the equip menu's sequence (`vs_battle_equipWeapon`,
     shield and two-handed handling, weapon model and animation reloads) as a per-frame
     state machine, so it never blocks.
-  - **Where the code lives:** most of it sits in the zero-filled tail of `BATTLE.PRG`,
-    which the game already loads into RAM. The rest replaces `func_800B26B8`, a helper
-    that nothing references: no calls, no pointers, no branches into it, checked across
-    every file on the disc (`tools/mod/check_dead.py`).
+  - **Where the code lives:** the main function and a few helpers sit in the zero-filled
+    tail of `BATTLE.PRG`, which the game already loads into RAM. The rest replaces the
+    bodies of eight unreferenced functions of `BATTLE.PRG` (`func_800B26B8`,
+    `func_800D197C`, `func_800AA108`+`func_800AA218`, `func_800D155C`,
+    `func_80099854`+`func_80099900`, `func_8009BD90`, `func_800733F8`, `func_8007FF8C`):
+    no calls, no pointers, no branches into them, checked across every file on the disc
+    (`tools/mod/check_dead.py`, `tools/mod/run_dead_checks.sh`). The layout is in
+    `tools/mod/wswap.ld`.
 - **Verification.**
   - Byte diffs against the original: only the intended instructions and regions change,
     and the `BATTLE.PRG` size on disc is unchanged. For the classic variant, the only
-    differences from the original disc data are the hook word (file offset `0x1111C`),
-    the `func_800B26B8` region (`0x49EB8..0x4A0A8`) and the tail from `0x8D124`; the
+    differences from the original disc data are the three hook words, the eight
+    unreferenced-function regions listed above and the tail from `0x8D124`; the
     other 5162 files are byte-identical.
   - The shipped machine code also ran in a small MIPS interpreter with the game's
     functions stubbed (`tools/mod/test_wswap.py`).

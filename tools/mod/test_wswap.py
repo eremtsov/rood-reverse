@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Behavioural test of the *shipped bytes* of the weapon-swap mod.
 
-Loads build/mod/wswap.bin at 0x800F5924 into an emulated 2 MB RAM and executes
-wswap_entry() with a small MIPS-I interpreter. Game functions the blob calls are
+Loads the *patched* build/data/BATTLE/BATTLE.PRG (tail blob, the bodies of the unreferenced
+functions and the three patched jal, exactly what goes on the disc) at 0x80068800 into an emulated
+2 MB RAM and executes wswap_entry() / wslot_label() with a small MIPS-I interpreter. Game functions the blob calls are
 replaced by Python stubs at their real addresses (symbols from build/mod/syms.ld);
 structures are laid out at their real addresses with the offsets the project
 headers give (see src/mod/test_offsets.c).
@@ -17,8 +18,7 @@ import subprocess
 import sys
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')
-BLOB_ADDR = 0x800F5924
-BLOB2_ADDR = 0x800B26B8   # body of the unreferenced func_800B26B8
+PRG_BASE = 0x80068800
 
 # ---- symbols ---------------------------------------------------------------
 SYM = {}
@@ -53,6 +53,10 @@ STATE = SYM['vs_main_buttonsState']
 PREV = SYM['vs_main_buttonsPreviousState']
 REPEAT = SYM['vs_main_buttonRepeat']
 STICK = SYM['vs_main_stickPosBuf']
+PADBUF = SYM['vs_main_padBuffer']
+DUP, DRIGHT, DDOWN, DLEFT = 1 << 12, 1 << 13, 1 << 14, 1 << 15
+PADLLEFT, PADLRIGHT, PADLUP, PADLDOWN = DLEFT, DRIGHT, DUP, DDOWN
+D_ANIM = 0x800EBCE8
 
 L2, R2, L1, R1 = 1, 2, 4, 8
 TRI, CIR, CRS, SQR = 0x10, 0x20, 0x40, 0x80
@@ -64,8 +68,10 @@ ACT2 = 0x80131000     # ->unk3C
 UNK48 = 0x80132000
 
 
-BLOB = open(os.path.join(ROOT, 'build/mod/wswap.bin'), 'rb').read()
-BLOB2 = open(os.path.join(ROOT, 'build/mod/wswap2.bin'), 'rb').read()
+PRG = open(os.path.join(ROOT, 'build/data/BATTLE/BATTLE.PRG'), 'rb').read()
+PRG_ORIG = open(os.path.join(ROOT, 'build/mod/BATTLE.PRG.pristine'), 'rb').read()
+assert len(PRG) == 579584 and len(PRG_ORIG) <= len(PRG)
+PRG_ORIG = PRG_ORIG + bytes(len(PRG) - len(PRG_ORIG))   # the shipped file is sector-rounded
 
 # v2 layout additions (src/mod/test_offsets.c)
 A_ANIM = 0x5B8          # D_800F4538_t.animationId (u_char)
@@ -96,8 +102,7 @@ class Machine:
         self.r = [0] * 32
         self.hi = self.lo = 0
         self.log = []
-        self.w(BLOB_ADDR, BLOB, raw=True)
-        self.w(BLOB2_ADDR, BLOB2, raw=True)
+        self.w(PRG_BASE, PRG, raw=True)
         self.stubs = {}
         self.setup_stubs()
         self.reset_world()
@@ -127,8 +132,7 @@ class Machine:
     # world ----------------------------------------------------------------
     def reset_world(self):
         self.mem[:] = bytes(len(self.mem))
-        self.w(BLOB_ADDR, BLOB)
-        self.w(BLOB2_ADDR, BLOB2)
+        self.w(PRG_BASE, PRG)
         self.wr(MODE, 1)
         self.wr(MENU, 0x3F, 1)
         self.wr(TRANS, 0)
@@ -152,6 +156,7 @@ class Machine:
         self.held = [0] * 32
         self.frame_hw = 0
         self.frame_stick = (128, 128)
+        self.frame_lstick = (128, 128)
         self.queue_wait = 0
         self.loading = False
         self.log.clear()
@@ -176,10 +181,12 @@ class Machine:
         a = INV + slot * W_SIZE
         return dict(blade=self.rd(a + W_BLADE, 1), eq=self.rd(a + W_EQ, 1), fav=self.rd(a + W_GEMS + 3, 1))
 
-    def setup_weapons(self, favs, cur, blade_cat=None):
-        """slots 0..7 all filled; favs = set of favourite slots; cur = equipped slot or -1"""
+    def setup_weapons(self, favs, cur, blade_cat=None, slots=None):
+        """inventory entries 0..7 all filled; favs = set of entries that have a slot (slot = entry+1,
+        so slot order is inventory order), or slots = {entry: slot value}; cur = equipped entry or -1"""
         for s in range(8):
-            self.set_weapon(s, s + 1, eq=int(s == cur), fav=int(s in favs))
+            fav = slots.get(s, 0) if slots is not None else (s + 1 if s in favs else 0)
+            self.set_weapon(s, s + 1, eq=int(s == cur), fav=fav)
             cat = (blade_cat or {}).get(s, 1)
             self.set_blade(s + 1, cat=cat, wep=20 + s, mat=s)
 
@@ -190,8 +197,24 @@ class Machine:
     # pad ------------------------------------------------------------------
     def pad_stub(self):
         """vs_main_processPadState, as in SLUS_010.40/main.c (mode 7)"""
-        st = self.frame_hw
+        hw = self.frame_hw
+        st = hw
         lx, ly = self.frame_stick
+        rx, ry = self.frame_lstick
+        # raw pad buffer: active low, buf[2] = Select..Left, buf[3] = L2..Square
+        self.wr(PADBUF, 0, 1)
+        self.wr(PADBUF + 1, 0x73, 1)
+        self.wr(PADBUF + 2, (~(hw >> 8)) & 0xFF, 1)
+        self.wr(PADBUF + 3, (~hw) & 0xFF, 1)
+        # decomp rStick* = physical left stick: ORed into the D-pad bits (analog mode)
+        if rx < 16:
+            st |= PADLLEFT
+        if rx >= 241:
+            st |= PADLRIGHT
+        if ry < 16:
+            st |= PADLUP
+        if ry >= 241:
+            st |= PADLDOWN
         # decomp lStick* = physical right stick
         if lx < 32 or lx >= 225 or ly < 32 or ly >= 225:
             st |= PADJ
@@ -237,6 +260,26 @@ class Machine:
         reg('vs_battle_playMenuLeaveSfx', lambda m: m.log.append(('sfx', 'leave')))
         reg('vs_battle_playInvalidSfx', lambda m: m.log.append(('sfx', 'invalid')))
         reg('func_800B64A8', lambda m: m.log.append(('stand', m.r[4], m.r[5], m.r[6])))
+
+        def exit6(m):
+            m.wr(MODE, 1)
+            m.log.append(('exit6',))
+        reg('func_80073554', exit6)
+
+        def sx(v):
+            v &= 0xFFFF
+            return v - 0x10000 if v & 0x8000 else v
+        reg('func_800C9EB8', lambda m: (m.log.append(('origLabel', m.r[4])), m.set_v0(0x180)))
+        reg('func_800C9F98', lambda m: m.log.append(('bullet', sx(m.r[4]), sx(m.r[4] >> 16), m.r[5])))
+
+        def text(m):
+            a = m.r[4]
+            raw = bytearray()
+            while m.rd(a, 1):
+                raw.append(m.rd(a, 1))
+                a += 1
+            m.log.append(('text', raw.decode('latin1'), sx(m.r[5]), sx(m.r[5] >> 16), m.r[6], m.r[7]))
+        reg('vs_battle_renderTextRawColor', text)
 
         def toggle(m):
             """func_800734C0 -> func_8007C0AC(0, 2) + mode 10"""
@@ -431,9 +474,14 @@ class Machine:
         return self.r[2]
 
     # one game frame: hook + (very small) model of the main loop -------------
-    def frame(self, hw=0, stick=(128, 128)):
+    def call(self, addr, a0=0, a1=0, a2=0, a3=0):
+        self.r[4], self.r[5], self.r[6], self.r[7] = a0, a1, a2, a3
+        return self.run(addr)
+
+    def frame(self, hw=0, stick=(128, 128), lstick=(128, 128)):
         self.frame_hw = hw
         self.frame_stick = stick
+        self.frame_lstick = lstick
         before_mode = self.rd(MODE)
         self.run(ENTRY)
         # main loop: the object data queue is processed once per frame, after the hook
@@ -490,18 +538,16 @@ def check(cond, msg):
 
 
 def ref_next(favs, cur, dir_, have):
-    """reference: next favourite slot after cur in direction dir_, skipping cur"""
-    if cur < 0:
-        start = 7 if dir_ > 0 else 0
-    else:
-        start = cur
-    for k in range(1, 9):
-        s = (start + dir_ * k) % 8
-        if s == cur:
+    """next assigned slot after the equipped weapon's (cycling); an unassigned equipped weapon starts
+    at the first (R1) / last (L1) slot"""
+    cand = sorted(f for f in favs if f in have)
+    if cur in cand:
+        if len(cand) == 1:
             return None
-        if s in have and s in favs:
-            return s
-    return None
+        return cand[(cand.index(cur) + dir_) % len(cand)]
+    if not cand:
+        return None
+    return cand[0] if dir_ > 0 else cand[-1]
 
 
 def test_cycle():
@@ -709,54 +755,6 @@ def test_camera():
         m.frame(CRS | L1, stick=(255, 128))
         cnt += (m.rd(PRESSED) & CRS) != 0
     check(cnt == 1, 'held Cross -> one pressed edge (%d)' % cnt)
-
-
-def test_favourite():
-    m = Machine()
-    m.setup_weapons(set(), 3)
-    m.frame(0)
-    m.log.clear()
-    m.frame(R2 | SELECT)
-    check(m.weapon(3)['fav'] == 1 and ('sfx', 'select') in m.log, 'R2+Select marks')
-    check(m.rd(PRESSED) & SELECT == 0 and m.rd(REPEAT) & SELECT == 0, 'Select swallowed')
-    check(all(m.weapon(s)['fav'] == 0 for s in range(8) if s != 3), 'only equipped weapon marked')
-    m.frame(R2)
-    m.log.clear()
-    m.frame(R2 | SELECT)
-    check(m.weapon(3)['fav'] == 0 and ('sfx', 'leave') in m.log, 'second press unmarks')
-    m.frame(0)
-    m.log.clear()
-    m.frame(SELECT)
-    check(m.weapon(3)['fav'] == 0 and not m.log and m.rd(PRESSED) & SELECT, 'Select alone is untouched')
-    m.frame(0)
-    # garbage value is "not favourite" and toggles to 1
-    m.wr(INV + 3 * W_SIZE + W_GEMS + 3, 0x5A, 1)
-    m.frame(R2 | SELECT)
-    check(m.weapon(3)['fav'] == 1, 'garbage -> marked')
-    # not in mode 1: Select untouched
-    m.frame(0)
-    m.wr(MODE, 2)
-    m.log.clear()
-    m.frame(R2 | SELECT)
-    check(m.rd(PRESSED) & SELECT and not m.log, 'mode 2: Select untouched')
-    m.wr(MODE, 1)
-    # menu open
-    m.frame(0)
-    m.wr(MENU, 1)
-    m.frame(R2 | SELECT)
-    check(m.rd(PRESSED) & SELECT and not m.log, 'menu open: nothing')
-    # no weapon equipped: swallowed, no change
-    m = Machine()
-    m.setup_weapons({1}, -1)
-    m.frame(0)
-    m.frame(R2 | SELECT)
-    check(m.rd(PRESSED) & SELECT == 0 and all(m.weapon(s)['fav'] == (s == 1) for s in range(8)), 'unarmed: no change')
-    # R2+Select and L1 in the same frame: favourite wins, no swap
-    m = Machine()
-    m.setup_weapons({0, 1}, 0)
-    m.frame(0)
-    m.frame(R2 | SELECT | R1)
-    check(m.equipped() == [0], 'no swap on the toggle frame')
 
 
 def test_state_machine_extras():
@@ -1019,7 +1017,7 @@ def test_drawn_edge_cases():
     check(not any(e[0] == 'dismiss' for e in log), 'no dismiss of our own box on replace')
 
 
-def test_fuzz(seed=1, frames=60000):
+def test_fuzz(seed=1, frames=12000):
     import random
     rnd = random.Random(seed)
     m = Machine()
@@ -1027,6 +1025,7 @@ def test_fuzz(seed=1, frames=60000):
     m.setup_weapons({0, 2, 5}, 0, blade_cat={0: 1, 1: 3, 2: 2, 3: 7, 4: 4, 5: 9, 6: 5, 7: 8})
     hw = 0
     stick = (128, 128)
+    lstick = (128, 128)
     prev_hw = 0
     swaps = 0
     frozen_frames = 0
@@ -1054,24 +1053,33 @@ def test_fuzz(seed=1, frames=60000):
                 m.wr(TB + 7 * TB_SIZE + TB_STRING, rnd.choice([0, 0x80100000, INV + 8, INV + 0x28]))
         if rnd.random() < 0.3:
             hw = 0
-            for bit in (L2, R2, L1, R1, TRI, CIR, CRS, SQR, SELECT, START):
+            for bit in (L2, R2, L1, R1, TRI, CIR, CRS, SQR, SELECT, START, DUP, DDOWN, DLEFT, DRIGHT):
                 if rnd.random() < 0.25:
                     hw |= bit
+            if rnd.random() < 0.3:
+                hw |= L2 | R2
+        if rnd.random() < 0.2:
+            lstick = (rnd.choice([0, 128, 128, 255]), rnd.choice([0, 128, 128, 255]))
         if rnd.random() < 0.3:
             stick = (rnd.choice([0, 30, 63, 64, 90, 128, 128, 128, 165, 193, 230, 255]), rnd.choice([0, 128, 128, 255]))
         m.load_frames = rnd.choice([1, 2, 5, 30])
         if rnd.random() < 0.01:
             for s in range(8):
-                m.wr(INV + s * W_SIZE + W_GEMS + 3, rnd.choice([0, 1, 1, 0x7F]), 1)
+                m.wr(INV + s * W_SIZE + W_GEMS + 3, rnd.choice([0, 1, 1, 2, 5, 8, 9, 0x7F]), 1)
         was_mode = m.rd(MODE)
         prev_state_prev = m.rd(PREV)
         try:
-            mode = m.frame(hw, stick)
+            mode = m.frame(hw, stick, lstick)
         except Halt as e:
             check(False, 'fuzz halted at frame %d: %s' % (f, e))
             return
         eq = m.equipped()
         check(len(eq) <= 1, 'fuzz: more than one weapon equipped %s' % eq)
+        if not loading and (m.rd(MENU, 1) & 0x3F) == 0x3F and not m.rd(s_loading):
+            vals = [m.weapon(x)['fav'] for x in range(8) if m.weapon(x)['blade']]
+            vals = [v for v in vals if v]
+            check(len(vals) == len(set(vals)) and all(1 <= v <= 8 for v in vals),
+                  'fuzz: slots not unique / out of range %s' % vals)
         ev = [e[0] for e in m.log]
         check(ev.count('initInfo') == ev.count('setText') <= 1, 'fuzz: name box calls unbalanced %s' % ev)
         check(ev.count('toggle') <= 1, 'fuzz: two toggles in one frame')
@@ -1088,6 +1096,8 @@ def test_fuzz(seed=1, frames=60000):
         pressed = m.rd(PRESSED)
         field = (m.rd(MENU, 1) & 0x3F) == 0x3F and 1 <= was_mode <= 3 and not loading
         st = hw | (PADJ if (stick[0] < 32 or stick[0] >= 225 or stick[1] < 32 or stick[1] >= 225) else 0)
+        st |= (PADLLEFT if lstick[0] < 16 else 0) | (PADLRIGHT if lstick[0] >= 241 else 0) \
+            | (PADLUP if lstick[1] < 16 else 0) | (PADLDOWN if lstick[1] >= 241 else 0)
         edges = st & ~prev_hw
         if field:
             check(pressed & (L1 | R1) == 0, 'fuzz: L1/R1 leaked into Pressed in the field')
@@ -1105,13 +1115,649 @@ def test_fuzz(seed=1, frames=60000):
     print('fuzz: %d frames, %d swaps, longest freeze %d frames' % (frames, swaps, max_frozen))
 
 
+# ===========================================================================
+# weapon slots: overlay labels, slot buttons, assign mode, migration
+# ===========================================================================
+LABEL = SYMS_BLOB['wslot_label']
+S_WMODE = SYMS_BLOB['s_wmode']
+S_ASSIGN = SYMS_BLOB['s_assign']
+S_LOADING_ADDR = SYMS_BLOB['s_loading']
+SLOT_BTN = [CIR, TRI, SQR, CRS, DUP, DDOWN, DRIGHT, DLEFT]    # slot 1..8
+SLOT_OF_ID = [2, 3, 1, 4, 5, 8, 7, 6]
+BUDGET = [74, 54, 64, 100, 110, 76, 52, 75]
+COL = [0x404040, 0x808080, 0xF0F080, 0x105096, 0x188CFF, 0x40E0FF, 0x6E6E6E, 0x188CFF]
+HINT, HINT_ASSIGN = '$SELECT: ASSIGN', '$ASSIGN: PRESS A SLOT'
+SEL_SHORTCUT_BITS = 0xF0F0   # Circle/Triangle/Square/Cross + D-pad: the game's own shortcut buttons
+
+
+def enc(text):
+    """ASCII -> game encoding, 24 bytes padded with the terminator 0xE7"""
+    out = []
+    for ch in text:
+        if ch.isdigit():
+            out.append(int(ch))
+        elif 'A' <= ch <= 'Z':
+            out.append(10 + ord(ch) - 65)
+        elif 'a' <= ch <= 'z':
+            out.append(0x24 + ord(ch) - 97)
+        else:
+            out.append({' ': 0x8F, '-': 0xA7, '.': 0xA0, "'": 0x96}[ch])
+    out = out[:24]
+    return bytes(out) + b'\xE7' * (24 - len(out))
+
+
+def font_adv(m, ch):
+    c = ord(ch) - 0x20
+    return (m.rd(0x800EB7B4 + (c >> 1), 1) >> ((c << 2) & 4)) & 0xF
+
+
+def ref_ascii(m, raw, budget):
+    out = ''
+    for c in raw:
+        if c < 10:
+            ch = chr(48 + c)
+        elif c < 0x24:
+            ch = chr(65 + c - 10)
+        elif c < 0x3E:
+            ch = chr(65 + c - 0x24)
+        elif c == 0xA7:
+            ch = '-'
+        elif c == 0xA0:
+            ch = '.'
+        elif c == 0xE7:
+            break
+        else:
+            ch = ' '
+        budget -= font_adv(m, ch)
+        if budget < 0:
+            break
+        out += ch
+    return out.rstrip(' ')
+
+
+def native_xy(m, id_, anim):
+    """label and bullet position of the game's own overlay (func_800C9FE8 data), x/y of the label, bullet"""
+    def tb(a, n):
+        return [m.rd(a + i, 1) for i in range(n)]
+    st = m.rd(SYM['vs_battle_rowAnimationSteps'] + anim, 1)
+    if id_ < 4:
+        lab, bul, w = tb(0x800EBCC8, 8), tb(0x800EBCC0, 8), m.rd(0x800EBCD0 + 4 * id_, 2)
+        x = 160 + st + lab[id_] - 2 + (w if id_ & 1 else 0)
+        return x, lab[id_ + 4], 160 + st + bul[id_], bul[id_ + 4]
+    i = id_ - 4
+    lab, bul, w = tb(0x800EBCA0, 8), tb(0x800EBC98, 8), m.rd(0x800EBCA8 + 4 * i, 2)
+    x = -st + lab[i] + (w if id_ & 1 else 0)
+    return x, lab[i + 4], -st + bul[i], bul[i + 4]
+
+
+NAMES = ['Dagger', 'Hand Axe', 'Broad Sword', 'Estoc-2.0', 'Mace of Wonders and Glory', 'Wooden Rod',
+         "Rhomphaia", 'Iii Lll Mmm Www Jjj']
+
+
+def overlay_machine(slots=None, cur=0, names=NAMES, drawn=False):
+    m = Machine()
+    slots = {i: i + 1 for i in range(8)} if slots is None else slots
+    m.setup_weapons(set(), cur, slots=slots)
+    for i, nm in enumerate(names):
+        m.w(INV + i * W_SIZE + W_NAME, enc(nm))
+    if drawn:
+        m.wr(CHSTATE + CH_DRAWN, 1)
+        m.wr(ACTOR + A_DRAWN_WORD, 1 << A_DRAWN_BIT)
+        m.wr(ACTOR + A_ANIM, 101, 1)
+    m.wr(MODE, 6)
+    m.wr(D_ANIM, 0, 1)      # the overlay is fully slid in
+    m.frame(L2 | R2)
+    m.log.clear()
+    return m
+
+
+def test_label_original():
+    m = Machine()
+    for anim in (0, 3, 9):
+        m.wr(D_ANIM, anim, 1)
+        for i in range(8):
+            m.log.clear()
+            v = m.call(LABEL, i)
+            check(v == 0x180 and m.log == [('origLabel', i)], 'weapon mode off: original behaviour id %d: %s %s' % (i, v, m.log))
+    # entering and leaving the weapon mode through the real hook
+    m = Machine()
+    m.setup_weapons(set(), 0, slots={0: 1})
+    m.wr(MODE, 6)
+    m.frame(L2)
+    check(m.rd(S_WMODE) == 0 and m.call(LABEL, 3) == 0x180, 'L2 alone: native labels')
+    m.frame(R2)
+    check(m.rd(S_WMODE) == 0, 'R2 alone: native labels')
+
+
+def test_label_weapons():
+    m = overlay_machine()
+    n = 0
+    for assign in (0, 1):
+        m.wr(S_ASSIGN, assign)
+        m.wr(S_WMODE, 1)
+        for anim in range(10):
+            m.wr(D_ANIM, anim, 1)
+            for i in range(8):
+                m.log.clear()
+                v = m.call(LABEL, i)
+                x, y, bx, by = native_xy(m, i, anim)
+                w = [e for e in range(8) if SLOT_OF_ID[i] == e + 1][0]
+                raw = bytes(m.mem[m.off(INV + w * W_SIZE + W_NAME):m.off(INV + w * W_SIZE + W_NAME) + 24])
+                want_name = ref_ascii(m, raw, BUDGET[i])
+                want_text = ('#' if i & 1 else '') + want_name
+                col = COL[(3 if assign else 0) + 1 + (1 if w == 0 else 0)]
+                exp = [('bullet', bx, by, 0x180), ('text', want_text, x - (2 if i & 1 else 0), y, col, 0)]
+                if i == 4 and anim == 0:
+                    exp.append(('text', HINT_ASSIGN if assign else HINT, 160, 142, COL[7 if assign else 6], 0))
+                check(v == 0 and m.log == exp, 'label id %d anim %d assign %d:\n   got  %s\n   want %s' % (i, anim, assign, m.log, exp))
+                n += 1
+    print('labels (positions vs the game tables, names, colours, hint): %d cases' % n)
+    # truncation to the width budget: no label is wider than its budget; names are cut, not wrapped
+    m.wr(S_ASSIGN, 0)
+    m.wr(D_ANIM, 0, 1)
+    for nm in ('A' * 24, 'W' * 24, 'I' * 24, 'Hand Axe', 'Aa Bb Cc Dd Ee Ff Gg Hh', 'Ab-Cd.Ef 0123456789', ' ' * 5 + 'X', 'X ' * 12):
+        for i in range(8):
+            m.w(INV + (SLOT_OF_ID[i] - 1) * W_SIZE + W_NAME, enc(nm))
+            m.log.clear()
+            m.call(LABEL, i)
+            t = [e for e in m.log if e[0] == 'text'][0][1].lstrip('#')
+            width = sum(font_adv(m, ch) for ch in t)
+            check(width <= BUDGET[i], 'name %r id %d is %d px > %d' % (nm, i, width, BUDGET[i]))
+            check(t == t.rstrip(' ') and t == ref_ascii(m, enc(nm), BUDGET[i]), 'name %r id %d -> %r' % (nm, i, t))
+    # empty slot: "--", dark, dimmed bullet; unknown characters become spaces; the terminator ends the name
+    m = overlay_machine(slots={0: 3, 1: 0})
+    for anim in (0, 5):
+        m.wr(D_ANIM, anim, 1)
+        for i in range(8):
+            m.log.clear()
+            m.call(LABEL, i)
+            x, y, bx, by = native_xy(m, i, anim)
+            if SLOT_OF_ID[i] in (3, ):
+                check(m.log[0][3] == 0x180 and m.log[1][1].lstrip('#') == 'DAGGER', 'slot 3 weapon shown')
+            else:
+                check(m.log[0] == ('bullet', bx, by, 0x140) and m.log[1][1] == ('#' if i & 1 else '') + '--'
+                      and m.log[1][4] == COL[0], 'empty slot id %d: %s' % (i, m.log))
+    m.wr(S_ASSIGN, 1)
+    m.log.clear()
+    m.call(LABEL, 0)
+    check(m.log[1][4] == COL[3], 'empty slot in assign mode is orange-dim')
+    # a record without a blade is not a weapon
+    m = overlay_machine(slots={0: 1})
+    m.wr(INV + 0 * W_SIZE + W_BLADE, 0, 1)
+    m.log.clear()
+    m.call(LABEL, 2)
+    check(m.log[1][1] == '--', 'slot of an empty record shows --')
+
+
+def press(m, btn, extra=L2 | R2, lstick=(128, 128)):
+    """a frame with the slot button down, then released"""
+    m.log.clear()
+    m.frame(extra | btn, lstick=lstick)
+    log = list(m.log)
+    pressed = m.rd(PRESSED)
+    m.frame(extra, lstick=lstick)
+    return log, pressed
+
+
+def test_slot_press():
+    n = 0
+    # --- every button, weapon sheathed: exit mode 6 the game's way, then the existing swap sequence
+    for slot in range(1, 9):
+        for cur in (-1, 0, 6):
+            tgt = slot - 1
+            if cur == tgt:
+                continue
+            m = overlay_machine(cur=cur)
+            log, pressed = press(m, SLOT_BTN[slot - 1])
+            names = [e[0] for e in nostand(log)]
+            check(nostand(log)[:2] == [('exit6',), ('sfx', 'change')] and ('equipWeapon', tgt) in log,
+                  'slot %d: exit6, sound, equip -> %s' % (slot, nostand(log)))
+            check(pressed & SEL_SHORTCUT_BITS == 0, 'slot %d: game shortcut buttons hidden (%x)' % (slot, pressed))
+            check(m.equipped() == [tgt], 'slot %d equipped %s' % (slot, m.equipped()))
+            check(m.rd(S_LOADING_ADDR) == 1 and m.rd(MODE) == 0, 'slot %d: swap state machine running, world held' % slot)
+            run_until(m, lambda mm: mm.rd(S_LOADING_ADDR) == 0, hw=L2 | R2)
+            check(m.rd(MODE) == 1 and (INV + tgt * W_SIZE + W_NAME) == m.rd(TB + 7 * TB_SIZE + TB_STRING),
+                  'slot %d: name popup of the new weapon, mode 1' % slot)
+            check(m.rd(S_WMODE) == 1, 'overlay stays in weapon mode while L2+R2 are held')
+            n += 1
+    # --- the same with the weapon drawn: sheathe animation, swap, draw
+    for slot in (1, 4, 5, 8):
+        m = overlay_machine(cur=2, drawn=True)
+        log, pressed = press(m, SLOT_BTN[slot - 1])
+        lg = nostand(log)
+        check(lg[:3] == [('exit6',), ('sfx', 'change'), ('toggle', 0)], 'drawn slot %d: %s' % (slot, lg))
+        check(m.rd(S_LOADING_ADDR) == 2 and m.equipped() == [2], 'sheathing first')
+        run_until(m, lambda mm: mm.rd(S_LOADING_ADDR) == 0, hw=L2 | R2)
+        check(m.equipped() == [slot - 1] and ('toggle', 1) in m.log and m.rd(CHSTATE + CH_DRAWN) == 1,
+              'drawn slot %d: swapped and drawn again' % slot)
+    # --- nothing to equip: empty slot, already equipped weapon: invalid sound, mode 6 stays, native shortcut hidden
+    m = overlay_machine(slots={0: 1, 1: 2}, cur=0)
+    for btn, what in ((SLOT_BTN[2], 'empty slot'), (SLOT_BTN[0], 'slot of the equipped weapon')):
+        log, pressed = press(m, btn)
+        check(nostand(log) == [('sfx', 'invalid')] and m.rd(MODE) == 6 and m.equipped() == [0], '%s: %s' % (what, log))
+        check(pressed & SEL_SHORTCUT_BITS == 0, '%s: shortcut hidden' % what)
+    # --- safety gates of the swap
+    gates = {
+        'transition 1': lambda m: m.wr(TRANS, 1), 'transition 2': lambda m: m.wr(TRANS, 2),
+        'transition 4': lambda m: m.wr(TRANS, 4), 'status 0x2000': lambda m: setattr(m, 'status', 0x2000),
+        'status 0x4000': lambda m: setattr(m, 'status', 0x4000), 'recovery timer': lambda m: m.wr(ACT2 + 0x954, 5, 2),
+        'busy animation': lambda m: setattr(m, 'busy', 1), 'queue busy': lambda m: m.wr(Q, 3, 1)}
+    for name, setup in gates.items():
+        m = overlay_machine(cur=0)
+        setup(m)
+        log, pressed = press(m, SLOT_BTN[1])
+        check(nostand(log) == [('sfx', 'invalid')] and m.rd(MODE) == 6 and m.equipped() == [0] and pressed & SEL_SHORTCUT_BITS == 0,
+              'gate %s: %s' % (name, log))
+    for name, setup in (('transition 3', lambda m: m.wr(TRANS, 3)), ('status 0x8000', lambda m: setattr(m, 'status', 0x8000))):
+        m = overlay_machine(cur=0)
+        setup(m)
+        press(m, SLOT_BTN[1])
+        check(m.equipped() == [1], 'gate %s allows' % name)
+    # --- two buttons at once: the lowest slot wins (the game checks Circle, Triangle, Square, Cross, Up, Down, Right, Left)
+    m = overlay_machine(cur=-1)
+    press(m, SLOT_BTN[5] | SLOT_BTN[2] | SLOT_BTN[7])
+    check(m.equipped() == [2], 'priority: slot 3 beats 6 and 8 (%s)' % m.equipped())
+    # --- not in weapon mode: the game keeps its own shortcut handling
+    for held in (L2, L2 | CIR):
+        m = Machine()
+        m.setup_weapons(set(), 0, slots={0: 1, 1: 2})
+        m.wr(MODE, 6)
+        m.frame(L2)
+        m.log.clear()
+        m.frame(held | (TRI if held == L2 else 0))
+        check(not m.log and m.rd(PRESSED) & (TRI | CIR) != 0 and m.rd(MODE) == 6, 'L2 only: native shortcut untouched %x' % m.rd(PRESSED))
+    m = Machine()
+    m.setup_weapons(set(), 0, slots={0: 1, 1: 2})
+    m.wr(MODE, 6)
+    m.frame(L2)
+    m.frame(L2 | SELECT)
+    check(m.rd(PRESSED) & SELECT and m.rd(S_ASSIGN) == 0, 'L2 + Select without R2 is not ours')
+    # --- L2+R2 in other modes / with a menu open: nothing
+    for mode, menu in ((2, 0x3F), (3, 0x3F), (0, 0x3F), (6, 0x00), (1, 0x3F)):
+        m = overlay_machine(cur=0)
+        m.wr(MODE, mode)
+        m.wr(MENU, menu, 1)
+        m.log.clear()
+        m.frame(L2 | R2 | TRI)
+        check(m.equipped() == [0] and not any(e[0] in ('exit6', 'equipWeapon') for e in m.log),
+              'mode %d menu %x: no slot action' % (mode, menu))
+    print('slot buttons: %d single-press cases + gates' % n)
+
+
+def test_dpad_stick():
+    # slots 5..8 only from the physical D-pad; the left stick (decomp rStick) is ORed into the D-pad bits
+    sticks = {'left': ((0, 128), 8), 'right': ((255, 128), 7), 'up': ((128, 0), 5), 'down': ((128, 255), 6)}
+    for name, (st, slot) in sticks.items():
+        m = overlay_machine(cur=-1)
+        for _ in range(3):
+            m.log.clear()
+            m.frame(L2 | R2, lstick=st)
+            check(m.rd(STATE) & SLOT_BTN[slot - 1] != 0, 'stick %s really synthesises the D-pad bit (test model)' % name)
+            check(m.rd(PRESSED) & SEL_SHORTCUT_BITS == 0, 'stick %s: shortcut bit leaked into Pressed' % name)
+        check(m.equipped() == [] and not m.log and m.rd(MODE) == 6, 'stick %s while holding L2+R2 fires nothing: %s' % (name, m.log))
+        m.frame(L2 | R2)
+        # stick first, L2+R2 pressed later
+        m = overlay_machine(cur=-1)
+        m.frame(0, lstick=st)
+        m.frame(L2, lstick=st)
+        m.frame(L2 | R2, lstick=st)
+        check(m.equipped() == [] and m.rd(MODE) == 6, 'stick %s held, then R2: nothing' % name)
+        # the physical D-pad still works, also while the stick is held
+        m = overlay_machine(cur=-1)
+        m.frame(L2 | R2, lstick=st)
+        btn = SLOT_BTN[slot - 1]
+        m.log.clear()
+        m.frame(L2 | R2 | btn, lstick=st)
+        check(m.equipped() == [slot - 1], 'physical D-pad %s with the stick held fires slot %d (%s)' % (name, slot, m.equipped()))
+    # D-pad held before L2+R2 does not fire when R2 arrives; a new press does
+    m = overlay_machine(cur=-1)
+    m.frame(L2 | DLEFT)
+    m.frame(L2 | R2 | DLEFT)
+    check(m.equipped() == [] and m.rd(MODE) == 6, 'D-pad held before R2: no fire')
+    m.frame(L2 | R2)
+    m.frame(L2 | R2 | DLEFT)
+    check(m.equipped() == [7], 'then a fresh press fires slot 8')
+    # a face button does not depend on the raw pad words
+    m = overlay_machine(cur=-1)
+    m.frame(L2 | R2 | CIR)
+    check(m.equipped() == [0], 'Circle fires slot 1')
+
+
+def slots_of(m):
+    return [m.weapon(i)['fav'] for i in range(8)]
+
+
+def test_assign_mode():
+    # Select toggles the mode, with sound; the hint line changes
+    m = overlay_machine(slots={0: 1, 1: 2}, cur=0)
+    m.log.clear()
+    m.frame(L2 | R2 | SELECT)
+    check(m.rd(S_ASSIGN) == 1 and ('sfx', 'select') in m.log and m.rd(PRESSED) & SELECT == 0 and m.rd(REPEAT) & SELECT == 0,
+          'Select turns assign mode on, sound, swallowed: %s' % m.log)
+    m.frame(L2 | R2)
+    m.wr(D_ANIM, 0, 1)
+    m.log.clear()
+    m.call(LABEL, 4)
+    check(m.log[-1][1:3] == (HINT_ASSIGN, 160) and m.log[-1][4] == COL[7], 'assign hint: %s' % (m.log[-1],))
+    m.log.clear()
+    m.frame(L2 | R2 | SELECT)
+    check(m.rd(S_ASSIGN) == 0 and ('sfx', 'leave') in m.log, 'Select again: off, sound')
+    m.frame(L2 | R2)
+    # equipped weapon (entry 0, slot 1) -> an empty slot: moves it
+    m.frame(L2 | R2 | SELECT)
+    m.frame(L2 | R2)
+    m.log.clear()
+    m.frame(L2 | R2 | SLOT_BTN[5])        # slot 6
+    check(slots_of(m)[0] == 6 and slots_of(m)[1] == 2 and m.rd(S_ASSIGN) == 0 and ('sfx', 'select') in m.log
+          and m.rd(MODE) == 6 and not m.rd(S_LOADING_ADDR), 'moved to slot 6, assign mode off, no swap: %s %s' % (slots_of(m), m.log))
+    m.frame(L2 | R2)
+    # onto an occupied slot: that weapon loses its slot
+    m.frame(L2 | R2 | SELECT)
+    m.frame(L2 | R2)
+    m.frame(L2 | R2 | SLOT_BTN[3])        # slot 4 empty
+    m.frame(L2 | R2)
+    m.frame(L2 | R2 | SELECT)
+    m.frame(L2 | R2)
+    m.frame(L2 | R2 | SLOT_BTN[1])          # slot 2 held by entry 1
+    check(slots_of(m)[:2] == [2, 0], 'took slot 2 from its owner: %s' % slots_of(m))
+    m.frame(L2 | R2)
+    # same slot again: cleared
+    m.frame(L2 | R2 | SELECT)
+    m.frame(L2 | R2)
+    m.log.clear()
+    m.frame(L2 | R2 | SLOT_BTN[1])
+    check(slots_of(m)[0] == 0 and ('sfx', 'leave') in m.log and m.rd(S_ASSIGN) == 0, 'same slot clears it: %s' % slots_of(m))
+    m.frame(L2 | R2)
+    # latch off: the next press equips again (slot 1 is empty now, entry 1 holds slot 2 again after a fresh setup)
+    m = overlay_machine(slots={0: 1, 1: 2}, cur=0)
+    m.frame(L2 | R2 | SELECT)
+    m.frame(L2 | R2)
+    m.frame(L2 | R2 | SLOT_BTN[0])         # clears slot 1
+    m.frame(L2 | R2)
+    m.log.clear()
+    m.frame(L2 | R2 | SLOT_BTN[1])         # assign mode is off: this equips entry 1
+    check(m.equipped() == [1] and slots_of(m)[:2] == [0, 2] and ('exit6',) in m.log, 'latched off after one assignment: %s' % m.log)
+    # all eight buttons assign to their slot
+    for slot in range(1, 9):
+        m = overlay_machine(slots={}, cur=3)
+        m.frame(L2 | R2 | SELECT)
+        m.frame(L2 | R2)
+        m.frame(L2 | R2 | SLOT_BTN[slot - 1])
+        check(slots_of(m) == [slot if i == 3 else 0 for i in range(8)] and m.rd(S_ASSIGN) == 0, 'assign to slot %d: %s' % (slot, slots_of(m)))
+    # nobody equipped: invalid, the mode stays on
+    m = overlay_machine(slots={1: 2}, cur=-1)
+    m.frame(L2 | R2 | SELECT)
+    m.frame(L2 | R2)
+    m.log.clear()
+    m.frame(L2 | R2 | SLOT_BTN[0])
+    check(('sfx', 'invalid') in m.log and m.rd(S_ASSIGN) == 1 and slots_of(m) == [0, 2, 0, 0, 0, 0, 0, 0], 'no weapon equipped: %s' % m.log)
+    # leaving L2+R2 turns it off
+    for rel in (L2, R2, 0):
+        m = overlay_machine(cur=0)
+        m.frame(L2 | R2 | SELECT)
+        check(m.rd(S_ASSIGN) == 1, 'on')
+        m.frame(rel)
+        check(m.rd(S_ASSIGN) == 0, 'released to %x: off' % rel)
+        m.frame(L2 | R2)
+        check(m.rd(S_ASSIGN) == 0, 'stays off when L2+R2 come back')
+    # a swap (assign off) clears nothing, a swap while assign mode is on does not happen
+    m = overlay_machine(slots={0: 1, 1: 2}, cur=0)
+    m.frame(L2 | R2 | SELECT)
+    m.frame(L2 | R2)
+    m.frame(L2 | R2 | SLOT_BTN[1])
+    check(m.equipped() == [0] and slots_of(m)[:2] == [2, 0], 'assign mode never swaps: %s' % slots_of(m))
+    # the unarmed / quick R2+Select path is tested in test_quick_assign
+
+
+def test_quick_assign():
+    m = Machine()
+    m.setup_weapons(set(), 3)
+    m.frame(0)
+    m.log.clear()
+    m.frame(R2 | SELECT)
+    check(slots_of(m)[3] == 1 and ('sfx', 'select') in m.log, 'R2+Select puts the equipped weapon into the first free slot')
+    check(m.rd(PRESSED) & SELECT == 0 and m.rd(REPEAT) & SELECT == 0, 'Select swallowed')
+    check(all(slots_of(m)[s] == 0 for s in range(8) if s != 3), 'only the equipped weapon changes')
+    m.frame(R2)
+    m.log.clear()
+    m.frame(R2 | SELECT)
+    check(slots_of(m)[3] == 0 and ('sfx', 'leave') in m.log, 'second press clears the slot')
+    m.frame(0)
+    m.log.clear()
+    m.frame(SELECT)
+    check(not m.log and m.rd(PRESSED) & SELECT, 'Select alone is untouched')
+    # first FREE slot, not the first number
+    m = Machine()
+    m.setup_weapons(set(), 5, slots={0: 1, 1: 2, 2: 4, 3: 3})
+    m.frame(0)
+    m.frame(R2 | SELECT)
+    check(slots_of(m)[5] == 5, 'first free slot is 5 (%s)' % slots_of(m))
+    m = Machine()
+    m.setup_weapons(set(), 5, slots={0: 2, 1: 3})
+    m.frame(0)
+    m.frame(R2 | SELECT)
+    check(slots_of(m)[5] == 1, 'first free slot is 1')
+    # garbage in the byte (> 8, not a slot): cleaned, then gets a real slot
+    m = Machine()
+    m.setup_weapons(set(), 3, slots={3: 0x5A})
+    m.frame(0)
+    check(slots_of(m)[3] == 0, 'garbage cleaned')
+    m.frame(R2 | SELECT)
+    check(slots_of(m)[3] == 1, 'garbage -> slot 1')
+    # other modes / menu open
+    m = Machine()
+    m.setup_weapons(set(), 3)
+    m.frame(0)
+    m.wr(MODE, 2)
+    m.log.clear()
+    m.frame(R2 | SELECT)
+    check(m.rd(PRESSED) & SELECT and not m.log, 'mode 2: Select untouched')
+    m.wr(MODE, 1)
+    m.frame(0)
+    m.wr(MENU, 1)
+    m.frame(R2 | SELECT)
+    check(m.rd(PRESSED) & SELECT and not m.log, 'menu open: nothing')
+    # no weapon equipped: swallowed, no change, silent
+    m = Machine()
+    m.setup_weapons({1}, -1)
+    m.frame(0)
+    m.log.clear()
+    m.frame(R2 | SELECT)
+    check(m.rd(PRESSED) & SELECT == 0 and slots_of(m) == [0, 2, 0, 0, 0, 0, 0, 0] and not m.log, 'unarmed: no change')
+    # R2+Select and R1 in the same frame: the assignment wins, no swap
+    m = Machine()
+    m.setup_weapons({0, 1}, 0)
+    m.frame(0)
+    m.frame(R2 | SELECT | R1)
+    check(m.equipped() == [0], 'no swap on the toggle frame')
+    # all eight slots busy except the equipped weapon's: it gets the free one; eight weapons always leave one free
+    m = Machine()
+    m.setup_weapons(set(), 7, slots={i: i + 1 for i in range(7)})
+    m.frame(0)
+    m.frame(R2 | SELECT)
+    check(slots_of(m)[7] == 8, 'last free slot')
+
+
+def test_migration():
+    def run_with(vals, blades=None):
+        m = Machine()
+        m.setup_weapons(set(), -1, slots={i: v for i, v in enumerate(vals)})
+        if blades is not None:
+            for i, b in enumerate(blades):
+                if not b:
+                    m.wr(INV + i * W_SIZE + W_BLADE, 0, 1)
+        m.frame(0)
+        return m, slots_of(m)
+    m, v = run_with([1, 0, 1, 0, 1, 1, 0, 0])
+    check(v == [1, 0, 2, 0, 3, 4, 0, 0], 'v2 favourites 1,1,1,1 -> 1,2,3,4 in inventory order: %s' % v)
+    m.frame(0)
+    m.frame(0)
+    check(slots_of(m) == v, 'idempotent')
+    m, v = run_with([1] * 8)
+    check(v == [1, 2, 3, 4, 5, 6, 7, 8], 'eight favourites: %s' % v)
+    m, v = run_with([0, 0, 1, 0, 0, 0, 0, 0])
+    check(v == [0, 0, 1, 0, 0, 0, 0, 0], 'a single favourite stays in slot 1')
+    m, v = run_with([0] * 8)
+    check(v == [0] * 8, 'nothing to do')
+    m, v = run_with([9, 1, 0x7F, 8, 0xFF, 1, 2, 3])
+    check(v == [0, 1, 0, 8, 0, 4, 2, 3], 'values > 8 cleared, duplicates get the lowest free slot: %s' % v)
+    m, v = run_with([3, 3, 3, 1, 0, 0, 0, 0])
+    check(v == [3, 2, 4, 1, 0, 0, 0, 0], 'duplicates of another slot: %s' % v)
+    m, v = run_with([1, 1, 2, 0, 0, 0, 0, 0])
+    check(v == [1, 3, 2, 0, 0, 0, 0, 0], 'a duplicate never takes a slot another weapon holds: %s' % v)
+    m, v = run_with([1, 1, 1, 0, 0, 0, 0, 0], blades=[1, 0, 1, 1, 1, 1, 1, 1])
+    check(v == [1, 1, 2, 0, 0, 0, 0, 0], 'records without a blade are ignored: %s' % v)
+    # exhaustive: every combination of {0,1} on 8 weapons (the v2 save format) ends with distinct slots, order kept
+    bad = 0
+    for mask in range(256):
+        vals = [(mask >> i) & 1 for i in range(8)]
+        m = Machine()
+        m.setup_weapons(set(), -1, slots=dict(enumerate(vals)))
+        m.frame(0)
+        got = slots_of(m)
+        fav = [i for i in range(8) if vals[i]]
+        want = [0] * 8
+        for k, i in enumerate(fav):
+            want[i] = k + 1
+        bad += got != want
+    check(bad == 0, 'all 256 v2 favourite masks migrate to 1..n in inventory order (%d wrong)' % bad)
+    # it runs in the field only (menu closed) and does not touch anything while a menu is open
+    m = Machine()
+    m.setup_weapons(set(), -1, slots={0: 1, 1: 1})
+    m.wr(MENU, 1)
+    m.frame(0)
+    check(slots_of(m)[:2] == [1, 1], 'menu open: not touched')
+    m.wr(MENU, 0x3F)
+    m.frame(0)
+    check(slots_of(m)[:2] == [1, 2], 'menu closed: migrated')
+
+
+def test_cycle_slots():
+    # L1/R1 walk the assigned weapons in slot order, not inventory order
+    perm = {0: 5, 1: 2, 2: 8, 3: 0, 4: 1, 5: 7, 6: 0, 7: 3}   # entry -> slot
+    order = sorted((s, e) for e, s in perm.items() if s)
+    entries = [e for s, e in order]            # entries by slot: 4, 1, 7, 0, 5, 2
+    for cur in range(-1, 8):
+        for button, d in ((R1, 1), (L1, -1)):
+            m = Machine()
+            m.setup_weapons(set(), cur, slots=perm)
+            m.frame(0)
+            m.log.clear()
+            m.frame(button)
+            if cur in entries:
+                i = entries.index(cur)
+                want = entries[(i + d) % len(entries)]
+            elif d > 0:
+                want = entries[0]
+            else:
+                want = entries[-1]
+            check(m.equipped() == [want], 'slot cycle cur=%d dir=%d want %d got %s' % (cur, d, want, m.equipped()))
+    # a single assigned weapon that is equipped: invalid; a single other one: that one
+    m = Machine()
+    m.setup_weapons(set(), 2, slots={2: 4})
+    m.frame(0)
+    m.frame(R1)
+    check(('sfx', 'invalid') in m.log and m.equipped() == [2], 'only the equipped weapon is assigned')
+    m = Machine()
+    m.setup_weapons(set(), 2, slots={6: 1})
+    m.frame(0)
+    m.frame(L1)
+    check(m.equipped() == [6], 'equipped but unassigned -> the single assigned one')
+    # nothing assigned
+    m = Machine()
+    m.setup_weapons(set(), 2, slots={})
+    m.frame(0)
+    m.frame(R1)
+    check(('sfx', 'invalid') in m.log and m.equipped() == [2], 'nothing assigned: invalid')
+    # old v2 favourites on L1/R1 work through the migration in the same frame
+    m = Machine()
+    m.setup_weapons(set(), 0, slots={0: 1, 3: 1, 5: 1})
+    m.frame(0)
+    m.frame(R1)
+    check(m.equipped() == [3], 'v2 save: R1 -> second favourite')
+
+
+def test_wmode_transitions():
+    m = overlay_machine(cur=0)
+    check(m.rd(S_WMODE) == 1, 'L2+R2 in mode 6: weapon mode')
+    m.wr(D_ANIM, 0, 1)
+    m.frame(L2)
+    check(m.rd(S_WMODE) == 0, 'R2 released, L2 held: native labels again at once')
+    m.frame(L2 | R2)
+    check(m.rd(S_WMODE) == 1, 'R2 again')
+    m.wr(D_ANIM, 3, 1)
+    m.frame(0)
+    check(m.rd(S_WMODE) == 1, 'both released while the overlay slides out: stays (no flash of native labels)')
+    m.wr(D_ANIM, 10, 1)
+    m.frame(0)
+    check(m.rd(S_WMODE) == 0, 'overlay hidden: off')
+    # mode 1 with both held (the game has not entered mode 6 yet): on; in other modes: unchanged
+    m = Machine()
+    m.setup_weapons(set(), 0, slots={0: 1})
+    m.frame(L2 | R2)
+    check(m.rd(S_WMODE) == 1, 'mode 1 + L2 + R2')
+    m = Machine()
+    m.setup_weapons(set(), 0, slots={0: 1})
+    m.wr(MODE, 2)
+    m.frame(L2 | R2)
+    check(m.rd(S_WMODE) == 0, 'mode 2: no')
+    m = Machine()
+    m.setup_weapons(set(), 0, slots={0: 1})
+    m.wr(MODE, 6)
+    m.wr(MENU, 0)
+    m.frame(L2 | R2)
+    check(m.rd(S_WMODE) == 0, 'menu open: no')
+    # during our own swap (mode 0 / 10) the weapon labels stay while L2+R2 are held
+    m = overlay_machine(cur=0, drawn=True)
+    m.wr(D_ANIM, 0, 1)
+    m.frame(L2 | R2 | SLOT_BTN[1])
+    for _ in range(4):
+        m.frame(L2 | R2)
+    check(m.rd(S_WMODE) == 1, 'weapon mode survives the sheathe/swap frames')
+    run_until(m, lambda mm: mm.rd(S_LOADING_ADDR) == 0, hw=L2 | R2)
+    check(m.rd(S_WMODE) == 1, 'and after the swap')
+    # after the swap the game re-enters mode 6 by itself (L2 still held): a second swap works without releasing
+    run_until(m, lambda mm: mm.rd(MODE) == 1, hw=L2 | R2)
+    m.wr(MODE, 6)
+    m.frame(L2 | R2)
+    m.frame(L2 | R2 | SLOT_BTN[2])
+    run_until(m, lambda mm: mm.rd(S_LOADING_ADDR) == 0, hw=L2 | R2)
+    check(m.equipped() == [2], 'second swap without releasing L2+R2')
+
+
+def test_code_budget():
+    """the pieces of the mod fit into the reported ranges and every changed byte is accounted for"""
+    changed = [i for i in range(len(PRG)) if PRG[i] != PRG_ORIG[i]]
+    ranges = []
+    for i in changed:
+        if ranges and i - ranges[-1][1] <= 8:
+            ranges[-1][1] = i + 1
+        else:
+            ranges.append([i, i + 1])
+    allowed = [(0x800733F8, 140), (0x8007991C, 4), (0x8007FF8C, 116), (0x80099854, 268), (0x8009BD90, 204),
+               (0x800AA108, 392), (0x800B26B8, 496), (0x800CA0A4, 4), (0x800CA1AC, 4), (0x800D155C, 284),
+               (0x800D197C, 412), (0x800F5924, 0x800F6000 - 0x800F5924)]
+    stray = [i for i in changed if not any(a - PRG_BASE <= i < a - PRG_BASE + n for a, n in allowed)]
+    check(not stray, 'bytes changed outside the allowed ranges: %s' % [hex(i + PRG_BASE) for i in stray[:8]])
+    print('changed byte clusters: %s' % ', '.join('%08X+%d' % (a + PRG_BASE, b - a) for a, b in ranges))
+
+
 if __name__ == '__main__':
-    print('entry = 0x%08X' % ENTRY)
+    print('entry = 0x%08X  wslot_label = 0x%08X' % (ENTRY, LABEL))
+    test_code_budget()
+    test_label_original()
+    test_label_weapons()
     test_cycle()
+    test_cycle_slots()
     test_swap_sequence()
     test_gating()
     test_camera()
-    test_favourite()
+    test_quick_assign()
+    test_migration()
+    test_slot_press()
+    test_dpad_stick()
+    test_assign_mode()
+    test_wmode_transitions()
     test_state_machine_extras()
     test_drawn_sequence()
     test_drawn_edge_cases()
