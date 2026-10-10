@@ -13,8 +13,8 @@
 # compile src/mod/wswap.c with the BATTLE.PRG compiler (2.8.1-psx -O2), link it
 # against the game symbols into two places:
 #   .wswap  at 0x800F5924: the zero tail of BATTLE.PRG (file offset 0x8D124, 1756 bytes)
-#   .wswap2 at 0x800E1EAC: the body of func_800E1EAC, which nothing references
-#                          (file offset 0x796AC, 1280 bytes)
+#   .wswap2 at 0x800B26B8: the body of func_800B26B8, which nothing references
+#                          (file offset 0x49EB8, 496 bytes)
 # patch both into BATTLE.PRG (size stays 579584 = 283 sectors), patch the one `jal`
 # in vs_battle_exec, and rebuild the disc image with mkpsxiso.
 set -euo pipefail
@@ -26,8 +26,8 @@ CROSS=mipsel-linux-gnu-
 
 BLOB_RAM=$((0x800F5924))
 BLOB_LIMIT=$((0x800F6000))
-DEAD_RAM=$((0x800E1EAC))   # func_800E1EAC (enemy wander AI), unreferenced
-DEAD_SIZE=1280
+DEAD_RAM=$((0x800B26B8))   # func_800B26B8 (bone-matrix helper), unreferenced (tools/mod/check_dead.py)
+DEAD_SIZE=496
 PRG_PLAIN_SIZE=577828      # 0x8D124, what the toolchain produces
 PRG_DISC_SIZE=579584       # 0x8D800, sector-rounded size the game loads
 PRG_RAM=$((0x80068800))
@@ -78,11 +78,11 @@ room=$((BLOB_LIMIT - BLOB_RAM))
 echo "tail blob: $size bytes of $room available ($((room - size)) free)"
 echo "dead-function blob: $size2 bytes of $DEAD_SIZE available ($((DEAD_SIZE - size2)) free)"
 [ "$size" -le "$room" ] || die "tail blob is $size bytes, only $room fit before 0x800F6000"
-[ "$size2" -le "$DEAD_SIZE" ] || die "func_800E1EAC blob is $size2 bytes, only $DEAD_SIZE fit"
+[ "$size2" -le "$DEAD_SIZE" ] || die "func_800B26B8 blob is $size2 bytes, only $DEAD_SIZE fit"
 [ "$(${CROSS}nm "$M/wswap.elf" | awk '$3=="beginSwap"{print $1}')" = "$(printf '%08x' $DEAD_RAM)" ] \
-    || die "beginSwap is not at the start of func_800E1EAC"
+    || die "beginSwap is not at the start of func_800B26B8"
 
-# 4. patch BATTLE.PRG: tail blob, func_800E1EAC body and the hook
+# 4. patch BATTLE.PRG: tail blob, func_800B26B8 body and the hook
 entry=$(${CROSS}nm "$M/wswap.elf" | awk '$3=="wswap_entry"{print $1}')
 [ -n "$entry" ] || die "wswap_entry not found"
 padstate=$(awk '$1=="vs_main_processPadState"{gsub(/;/,"",$3); print $3}' "$M/syms.ld")
@@ -98,11 +98,11 @@ assert len(data) == plain, "BATTLE.PRG size"
 jal = lambda t: 0x0C000000 | ((t >> 2) & 0x03FFFFFF)
 old = struct.unpack_from('<I', data, hook)[0]
 assert old == jal(padstate), "hook site is not jal vs_main_processPadState: %08x" % old
-# the function we overwrite must be the untouched original func_800E1EAC
+# the function we overwrite must be the untouched original func_800B26B8
 original = open(orig, 'rb').read()
-assert bytes(data[dead:dead + dead_size]) == original[dead:dead + dead_size], "func_800E1EAC differs from the original"
+assert bytes(data[dead:dead + dead_size]) == original[dead:dead + dead_size], "func_800B26B8 differs from the original"
 first = struct.unpack_from('<I', data, dead)[0]
-assert (first >> 16) == 0x27BD and first & 0x8000, "func_800E1EAC does not start with 'addiu sp,sp,-N': %08x" % first
+assert (first >> 16) == 0x27BD and first & 0x8000, "func_800B26B8 does not start with 'addiu sp,sp,-N': %08x" % first
 blob = open(blob, 'rb').read()
 blob2 = open(blob2, 'rb').read()
 assert len(blob2) <= dead_size
@@ -113,7 +113,7 @@ assert len(data) == disc
 struct.pack_into('<I', data, hook, jal(entry))
 open(prg, 'wb').write(data)
 print("patched hook @0x%X: %08x -> %08x (wswap_entry=0x%08X)" % (hook, old, jal(entry), entry))
-print("patched func_800E1EAC @0x%X: %d bytes of mod code (original first word %08x)" % (dead, len(blob2), first))
+print("patched func_800B26B8 @0x%X: %d bytes of mod code (original first word %08x)" % (dead, len(blob2), first))
 PYEOF
 
 # 5. rebuild the disc image (mkpsxiso hangs if an old image is present)

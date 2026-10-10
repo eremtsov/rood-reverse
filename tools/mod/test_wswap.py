@@ -18,7 +18,7 @@ import sys
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')
 BLOB_ADDR = 0x800F5924
-BLOB2_ADDR = 0x800E1EAC   # body of the unreferenced func_800E1EAC
+BLOB2_ADDR = 0x800B26B8   # body of the unreferenced func_800B26B8
 
 # ---- symbols ---------------------------------------------------------------
 SYM = {}
