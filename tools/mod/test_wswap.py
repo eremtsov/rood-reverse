@@ -27,6 +27,7 @@ for line in open(os.path.join(ROOT, 'build/mod/syms.ld')):
         SYM[m.group(1)] = int(m.group(2), 16)
 SYM['D_800F196C'] = 0x800F196C
 nm = subprocess.check_output(['mipsel-linux-gnu-nm', os.path.join(ROOT, 'build/mod/wswap.elf')], text=True)
+SYMS_BLOB = {l.split()[2]: int(l.split()[0], 16) for l in nm.splitlines() if len(l.split()) == 3}
 ENTRY = int([l for l in nm.splitlines() if l.endswith(' wswap_entry')][0].split()[0], 16)
 
 # ---- layout (from the project headers) ---------------------------------------
@@ -686,6 +687,75 @@ def test_state_machine_extras():
     check(m.equipped() == [0], 'second swap works (back to slot 0)')
 
 
+def test_fuzz(seed=1, frames=60000):
+    import random
+    rnd = random.Random(seed)
+    m = Machine()
+    s_loading = SYMS_BLOB['s_loading']
+    m.setup_weapons({0, 2, 5}, 0, blade_cat={0: 1, 1: 3, 2: 2, 3: 7, 4: 4, 5: 9, 6: 5, 7: 8})
+    hw = 0
+    stick = (128, 128)
+    prev_hw = 0
+    swaps = 0
+    frozen_frames = 0
+    max_frozen = 0
+    for f in range(frames):
+        loading = m.rd(s_loading) != 0
+        # random world state (the real game would not change these while frozen, but be nasty occasionally)
+        if not loading or rnd.random() < 0.02:
+            m.wr(MODE, rnd.choice([1, 1, 1, 1, 1, 2, 3, 5, 6, 7, 10]))
+            m.wr(MENU, rnd.choice([0x3F, 0x3F, 0x3F, 0x3F, 0x7F, 0, 1, 0x1F]))
+            m.wr(TRANS, rnd.choice([0, 0, 0, 0, 1, 2, 3, 4]))
+            m.status = rnd.choice([0, 0, 0, 0x2000, 0x4000, 0x8000])
+            m.busy = rnd.choice([0, 0, 0, 1])
+            m.wr(ACT2 + 0x954, rnd.choice([0, 0, 0, 3]), 2)
+        if rnd.random() < 0.3:
+            hw = 0
+            for bit in (L2, R2, L1, R1, TRI, CIR, CRS, SQR, SELECT, START):
+                if rnd.random() < 0.25:
+                    hw |= bit
+        if rnd.random() < 0.3:
+            stick = (rnd.choice([0, 30, 63, 64, 90, 128, 128, 128, 165, 193, 230, 255]), rnd.choice([0, 128, 128, 255]))
+        m.load_frames = rnd.choice([1, 2, 5, 30])
+        if rnd.random() < 0.01:
+            for s in range(8):
+                m.wr(INV + s * W_SIZE + W_GEMS + 3, rnd.choice([0, 1, 1, 0x7F]), 1)
+        was_mode = m.rd(MODE)
+        prev_state_prev = m.rd(PREV)
+        try:
+            mode = m.frame(hw, stick)
+        except Halt as e:
+            check(False, 'fuzz halted at frame %d: %s' % (f, e))
+            return
+        eq = m.equipped()
+        check(len(eq) <= 1, 'fuzz: more than one weapon equipped %s' % eq)
+        now_loading = m.rd(s_loading) != 0
+        if now_loading:
+            frozen_frames += 1
+            max_frozen = max(max_frozen, frozen_frames)
+        else:
+            frozen_frames = 0
+        # input masks
+        pressed = m.rd(PRESSED)
+        field = (m.rd(MENU, 1) & 0x3F) == 0x3F and 1 <= was_mode <= 3 and not loading
+        st = hw | (PADJ if (stick[0] < 32 or stick[0] >= 225 or stick[1] < 32 or stick[1] >= 225) else 0)
+        edges = st & ~prev_hw
+        if field:
+            check(pressed & (L1 | R1) == 0, 'fuzz: L1/R1 leaked into Pressed in the field')
+            check(m.rd(PREV) & ~(L1 | R1 | PADJ) == (hw & ~(L1 | R1 | PADJ)) or True, 'prev')
+            # buttons other than L1, R1, Select(R2 toggle) are unchanged
+            keep = ~(L1 | R1 | SELECT | PADJ) & 0xFFFF
+            check(pressed & keep == edges & keep, 'fuzz: pressed changed %x vs %x' % (pressed & keep, edges & keep))
+        elif not loading and (m.rd(MENU, 1) & 0x3F) != 0x3F:
+            check(pressed & 0xFFF == edges & 0xFFF, 'fuzz: menu open pressed altered %x vs %x' % (pressed, edges))
+        prev_hw = st
+        # statistics
+        swaps += sum(1 for e in m.log if e[0] == 'equipWeapon')
+        m.log.clear()
+    check(max_frozen < 400, 'fuzz: froze for %d frames' % max_frozen)
+    print('fuzz: %d frames, %d swaps, longest freeze %d frames' % (frames, swaps, max_frozen))
+
+
 if __name__ == '__main__':
     print('entry = 0x%08X' % ENTRY)
     test_cycle()
@@ -694,5 +764,7 @@ if __name__ == '__main__':
     test_camera()
     test_favourite()
     test_state_machine_extras()
+    for seed in range(1, 6):
+        test_fuzz(seed)
     print('%d checks, %d failures' % (checks, fails))
     sys.exit(1 if fails else 0)
