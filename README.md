@@ -1,4 +1,4 @@
-> **This fork contains a personal QoL mod for Vagrant Story** (western confirm/cancel, favorite-weapon quick swap on L1/R1, camera on the right stick). See [MOD.md](MOD.md). It is not part of upstream rood-reverse.
+> **This fork contains a personal QoL mod for Vagrant Story** (favorite-weapon quick swap on L1/R1, camera on the right stick; this branch keeps the original Cross/Circle layout, the `qol-mod` branch adds western confirm/cancel). See [MOD.md](MOD.md). It is not part of upstream rood-reverse.
 
 # Rood Reverse
 

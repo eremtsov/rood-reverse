@@ -4,9 +4,11 @@
     python3 -I tools/mod/verify_mod.py OUTPUT_LOG
 
 Run after tools/mod/build_mod.sh. Needs
-  .baseline/data          a copy of build/data from before the weapon mod (confirm-swap build)
-  .baseline_v1/BATTLE.PRG the BATTLE.PRG of the previous release ([mod-weapons])
-and, if present, previous mod images in the directory named by $VS_MOD_IMG_DIR.
+  .baseline/data          a copy of build/data from a plain `make` before the weapon mod
+                          (on qol-mod-classic that is the unmodified decompilation build)
+and, if present,
+  .baseline_v1/BATTLE.PRG the BATTLE.PRG of a previous release ([mod-weapons]; qol-mod only)
+  previous mod images in the directory named by $VS_MOD_IMG_DIR.
 """
 import hashlib
 import os
@@ -251,7 +253,8 @@ if len(new_prg) != PRG_SIZE:
     fail('size %d' % len(new_prg))
 p('on-disc size %d (579584 = 283 sectors): %s' % (len(new_prg), 'ok' if len(new_prg) == PRG_SIZE else 'BAD'))
 base_prg = open('.baseline/data/BATTLE/BATTLE.PRG', 'rb').read()
-v1_prg = open('.baseline_v1/BATTLE.PRG', 'rb').read()
+HAVE_V1 = os.path.exists('.baseline_v1/BATTLE.PRG')
+v1_prg = open('.baseline_v1/BATTLE.PRG', 'rb').read() if HAVE_V1 else b''
 p('(a) against the build before the weapon mod (.baseline, %d bytes):' % len(base_prg))
 if len(base_prg) != TAIL_OFF:
     fail('baseline PRG is not %d bytes' % TAIL_OFF)
@@ -276,9 +279,11 @@ if not tail_ok:
     fail('tail content')
 
 p('(b) against the previous release ([mod-weapons], .baseline_v1/BATTLE.PRG, %d bytes): every changed byte range' % len(v1_prg))
-if len(v1_prg) != PRG_SIZE:
+if not HAVE_V1:
+    p('    (.baseline_v1/BATTLE.PRG not present, skipped)')
+elif len(v1_prg) != PRG_SIZE:
     fail('v1 PRG size')
-changed_bytes = [i for i in range(PRG_SIZE) if v1_prg[i] != new_prg[i]]
+changed_bytes = [i for i in range(PRG_SIZE) if v1_prg[i] != new_prg[i]] if HAVE_V1 else []
 allowed = [('hook word', HOOK_OFF, HOOK_OFF + 4), ('func_800B26B8 body', DEAD_OFF, DEAD_OFF + DEAD_SIZE),
            ('tail of the last sector', TAIL_OFF, PRG_SIZE)]
 changed = []
@@ -292,12 +297,12 @@ stray = [i for i in changed_bytes if not any(lo <= i < hi for _, lo, hi in allow
 p('    differing bytes outside those three regions: %d' % len(stray))
 if stray:
     fail('unexpected changes vs previous release at %s' % ', '.join('0x%X' % i for i in stray[:10]))
-if not changed:
+if HAVE_V1 and not changed:
     fail('no changes vs previous release?')
 
 p()
 p('-- 7. all other files under build/data identical to the build before the weapon mod')
-r = subprocess.run('diff -rq .baseline/data build/data', shell=True, text=True, capture_output=True, executable='/bin/bash')
+r = subprocess.run('diff -rq -x "*.elf" .baseline/data build/data', shell=True, text=True, capture_output=True, executable='/bin/bash')
 lines = [l for l in r.stdout.splitlines() if l]
 p('\n'.join(lines) if lines else '(no differences)')
 other = [l for l in lines if 'BATTLE/BATTLE.PRG' not in l]
@@ -338,7 +343,7 @@ for name in ('[mod-weapons]', '[mod]'):
     outside = [s for s in bad if not (LBA <= s < LBA + 283)]
     p('against %s: %d of %d sectors differ; inside BATTLE.PRG [%d,%d): %s; outside: %s'
       % (name, len(bad), sec, LBA, LBA + 283, inside, outside))
-    if name == '[mod-weapons]':
+    if name == '[mod-weapons]' and HAVE_V1:
         p('  expected sectors from the byte ranges in section 6(b): %s' % sorted(exp_sectors))
         if set(bad) != exp_sectors:
             fail('image differs from [mod-weapons] in unexpected sectors')

@@ -11,7 +11,7 @@
  *   right stick X      camera rotation: right = old L1, left = old R1
  *
  * A swap with the weapon drawn plays the game's own sheathe animation first
- * (func_800734C0, the Circle button), waits until func_8009E4B0 says the actor is
+ * (func_800734C0, the field sheathe/draw toggle), waits until func_8009E4B0 says the actor is
  * no longer busy, swaps while the world is held (mode 0), then plays the draw animation.
  * With the weapon sheathed the swap is silent. When it is done the name of the
  * new weapon is shown for a moment in the information text box (box 7).
@@ -31,7 +31,7 @@
 extern u_int D_800F196C;
 extern int vs_main_processPadState(void);
 extern int func_8009E4B0(int);
-extern void func_800734C0(void); /* toggle draw/sheathe (Circle / Cross in the field) */
+extern void func_800734C0(void); /* toggle draw/sheathe (the field sheathe button) */
 extern void vs_battle_playMenuChangeSfx(void);
 extern void vs_battle_playMenuSelectSfx(void);
 extern void vs_battle_playMenuLeaveSfx(void);

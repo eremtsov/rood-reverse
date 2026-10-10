@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Build the personal mod disc image: favourite-weapon quick swap (L1/R1) with
-# sheathe/draw animations and the weapon-name box, camera on the right stick, on
-# top of the confirm/cancel-swap commits.
+# Build the "classic buttons" mod disc image: favourite-weapon quick swap (L1/R1)
+# with sheathe/draw animations and the weapon-name box, camera on the right stick,
+# directly on the unmodified decompilation (the original Cross/Circle layout; the
+# "western confirm/cancel" variant is the qol-mod branch).
 #
 #   tools/mod/build_mod.sh
 #
