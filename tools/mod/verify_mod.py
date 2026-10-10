@@ -6,7 +6,7 @@
 Run after tools/mod/build_mod.sh. Needs
   .baseline/data          a copy of build/data from before the weapon mod (confirm-swap build)
   .baseline_v1/BATTLE.PRG the BATTLE.PRG of the previous release ([mod-weapons])
-and, if present, the images in /mnt/d/Proj/Vagrant story/Vagrant Story Mod/.
+and, if present, previous mod images in the directory named by $VS_MOD_IMG_DIR.
 """
 import hashlib
 import os
@@ -45,7 +45,7 @@ BLOB_LIMIT = 0x800F6000
 DEAD_RAM = 0x800B26B8
 DEAD_OFF = DEAD_RAM - PRG_RAM
 DEAD_SIZE = 496
-IMG_DIR = '/mnt/d/Proj/Vagrant story/Vagrant Story Mod/'
+IMG_DIR = os.path.join(os.environ.get('VS_MOD_IMG_DIR', ''), '')
 
 p('=' * 78)
 p('Vagrant Story weapon-swap mod v2: build verification log')
