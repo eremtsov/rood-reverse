@@ -341,11 +341,11 @@ static int _disassembleItem(int itemIndex)
         vs_battle_getMenuItem(30 + D_8010A683)->selected = 1;
         vs_battle_getMenuItem(31 - D_8010A683)->selected = 0;
 
-        if (vs_main_buttonsPressed.all & (PADRright | PADRdown)) {
+        if (vs_main_buttonsPressed.all & (VS_BUTTON_CONFIRM | VS_BUTTON_CANCEL)) {
             vs_mainMenu_menuItemFlyoutRight(30);
             vs_mainMenu_menuItemFlyoutRight(31);
             _showLoot = 0;
-            if ((D_8010A683 != 0) || (vs_main_buttonsPressed.all & PADRdown)) {
+            if ((D_8010A683 != 0) || (vs_main_buttonsPressed.all & VS_BUTTON_CANCEL)) {
                 vs_battle_playMenuLeaveSfx();
                 state = finalize;
             } else {
@@ -583,7 +583,7 @@ static int _consolidateMiscItems(int lootIndex)
 
             _showLoot = 0;
 
-            if ((D_8010A68F != 0) || (vs_main_buttonsPressed.all & PADRdown)) {
+            if ((D_8010A68F != 0) || (vs_main_buttonsPressed.all & VS_BUTTON_CANCEL)) {
                 vs_battle_playMenuLeaveSfx();
                 state = 6;
             } else {
@@ -1001,7 +1001,7 @@ void _displayInventoryCapacities(int edgeX)
     vs_mainmenu_renderButtonBackground(buttonBgPos, 128, 64, 10);
     vs_battle_renderTextRawColor("GET", (edgeX + 196) | (112 << 16),
         vs_getRGB(64, 64, 64) << _controlsEnabled, NULL);
-    vs_mainmenu_renderButton(buttonIdCircle, edgeX + 176, 110, NULL);
+    vs_mainmenu_renderButton(buttonIdCross, edgeX + 176, 110, NULL);
 
     str = "ALL";
     xy = (edgeX + 252) | (112 << 16);
@@ -1016,7 +1016,7 @@ void _displayInventoryCapacities(int edgeX)
     vs_mainmenu_renderButton(buttonIdSquare, edgeX + 232, 110, NULL);
     vs_battle_renderTextRawColor("END", (edgeX + 196) | (128 << 16),
         vs_getRGB(64, 64, 64) << _controlsEnabled, NULL);
-    vs_mainmenu_renderButton(buttonIdCross, edgeX + 176, 126, NULL);
+    vs_mainmenu_renderButton(buttonIdCircle, edgeX + 176, 126, NULL);
 }
 
 static int _droppableUnderCurrentDifficulty(int arg0)
@@ -1325,7 +1325,7 @@ static int _discardItems(int init)
         vs_battle_getMenuItem(30 + D_8010A692)->selected = 1;
         vs_battle_getMenuItem(31 - D_8010A692)->selected = 0;
 
-        if (vs_main_buttonsPressed.all & (PADRright | PADRdown)) {
+        if (vs_main_buttonsPressed.all & (VS_BUTTON_CONFIRM | VS_BUTTON_CANCEL)) {
 
             vs_mainMenu_menuItemFlyoutRight(30);
             vs_mainMenu_menuItemFlyoutRight(31);
@@ -1334,7 +1334,7 @@ static int _discardItems(int init)
                 vs_mainMenu_dismissInformationBox();
             }
 
-            if ((D_8010A692 == 0) && !(vs_main_buttonsPressed.all & PADRdown)) {
+            if ((D_8010A692 == 0) && !(vs_main_buttonsPressed.all & VS_BUTTON_CANCEL)) {
                 int var_v1;
                 vs_main_playSfxDefault(0x7E, 0x1C);
                 var_v1 = 1;
@@ -1439,12 +1439,12 @@ static int _organizeInventory(_lootListItem* loot)
         vs_battle_getMenuItem(30 + selectedRow)->selected = 1;
         vs_battle_getMenuItem(31 - selectedRow)->selected = 0;
 
-        if (vs_main_buttonsPressed.all & (PADRright | PADRdown)) {
+        if (vs_main_buttonsPressed.all & (VS_BUTTON_CONFIRM | VS_BUTTON_CANCEL)) {
 
             vs_mainMenu_menuItemFlyoutRight(30);
             vs_mainMenu_menuItemFlyoutRight(31);
 
-            if (vs_main_buttonsPressed.all & PADRdown) {
+            if (vs_main_buttonsPressed.all & VS_BUTTON_CANCEL) {
                 vs_battle_playMenuLeaveSfx();
                 return -1;
             }
@@ -1530,7 +1530,7 @@ int _processLootMenu(int initialize)
     case processInput:
         _controlsEnabled = 1;
 
-        if (vs_main_buttonsPressed.all & PADRdown) {
+        if (vs_main_buttonsPressed.all & VS_BUTTON_CANCEL) {
 
             vs_battle_playMenuLeaveSfx();
 
@@ -1580,7 +1580,7 @@ int _processLootMenu(int initialize)
         lootIndex = _selectedLoot + _lootListOffset;
         loot = &_lootList[lootIndex];
 
-        if (vs_main_buttonsPressed.all & PADRright) {
+        if (vs_main_buttonsPressed.all & VS_BUTTON_CONFIRM) {
             if (loot->state == 0) {
 
                 vs_battle_playMenuSelectSfx();

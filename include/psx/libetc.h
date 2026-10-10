@@ -33,6 +33,10 @@ extern int PadIdentifier;
 #define PADR2      PADm
 #define PADstart   PADh
 #define PADselect  PADk
+
+/* mod: Western confirm/cancel (Cross = confirm, Circle = cancel in menus) */
+#define VS_BUTTON_CONFIRM PADRdown
+#define VS_BUTTON_CANCEL  PADRright
 		    
 #define MOUSEleft  (1<<3)
 #define MOUSEright (1<<2)

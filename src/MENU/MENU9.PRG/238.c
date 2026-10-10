@@ -720,7 +720,7 @@ int _menuInput(void)
                 }
             }
         }
-        if (vs_main_buttonsPressed.all & (PADRup | PADRdown)) {
+        if (vs_main_buttonsPressed.all & (PADRup | VS_BUTTON_CANCEL)) {
 
             vs_main_playSfxDefault(0x7E, 6);
             vs_mainMenu_dismissInformationBox();
@@ -831,7 +831,7 @@ int _menuInput(void)
                 }
             }
         }
-        if (vs_main_buttonsPressed.all & (PADRup | PADRdown)) {
+        if (vs_main_buttonsPressed.all & (PADRup | VS_BUTTON_CANCEL)) {
 
             vs_main_playSfxDefault(0x7E, 6);
             vs_mainMenu_dismissInformationBox();
@@ -891,7 +891,7 @@ int _menuInput(void)
             }
         }
 
-        if (vs_main_buttonsPressed.all & (PADRup | PADRdown)) {
+        if (vs_main_buttonsPressed.all & (PADRup | VS_BUTTON_CANCEL)) {
 
             vs_main_playSfxDefault(0x7E, 6);
             vs_mainMenu_dismissInformationBox();
@@ -1002,7 +1002,7 @@ int _menuInput(void)
                 vs_main_playSfxDefault(0x7E, 4);
             }
         }
-        if (vs_main_buttonsPressed.all & PADRright) {
+        if (vs_main_buttonsPressed.all & VS_BUTTON_CONFIRM) {
             if (_monBinData[vs_battle_menu9CursorMemory.encyclopaediaPage
                             + vs_battle_menu9CursorMemory.encyclopaediaRow]
                     .unlocked
@@ -1021,7 +1021,7 @@ int _menuInput(void)
                 vs_main_playSfxDefault(0x7E, 7);
             }
 
-        } else if (vs_main_buttonsPressed.all & (PADRup | PADRdown)) {
+        } else if (vs_main_buttonsPressed.all & (PADRup | VS_BUTTON_CANCEL)) {
 
             vs_main_playSfxDefault(0x7E, 6);
             vs_mainMenu_dismissInformationBox();
@@ -1106,7 +1106,7 @@ int _menuInput(void)
             _renderEnemyNavigation(1);
         }
 
-        if (vs_main_buttonsPressed.all & (PADRup | PADRdown)) {
+        if (vs_main_buttonsPressed.all & (PADRup | VS_BUTTON_CANCEL)) {
 
             vs_main_playSfxDefault(0x7E, 6);
 

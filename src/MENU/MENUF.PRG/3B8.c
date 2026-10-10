@@ -787,9 +787,9 @@ int _renderCongratulationsScreen(void)
                         214, 187, _elementAnimationState, _screenTimer);
                 }
             } else {
-                if ((vs_main_buttonsPressed.all & PADRright) || _screenTimer > 2072) {
+                if ((vs_main_buttonsPressed.all & VS_BUTTON_CONFIRM) || _screenTimer > 2072) {
 
-                    if (vs_main_buttonsPressed.all & PADRright) {
+                    if (vs_main_buttonsPressed.all & VS_BUTTON_CONFIRM) {
                         vs_main_playSfxDefault(0x7E, 0x76);
                     }
 
@@ -804,7 +804,7 @@ int _renderCongratulationsScreen(void)
 
                 _renderPressButtonPrompt(214, 187, 48, _screenTimer);
             }
-        } else if (vs_main_buttonsPressed.all & PADRright) {
+        } else if (vs_main_buttonsPressed.all & VS_BUTTON_CONFIRM) {
 
             func_80045D64(0x7E, 0);
 
@@ -842,7 +842,7 @@ int _renderCongratulationsScreen(void)
             _stateTimer = 0;
         }
     } else if (_screenState == 2) {
-        if ((vs_main_buttonsPressed.all & PADRright) || (_stateTimer > 450)) {
+        if ((vs_main_buttonsPressed.all & VS_BUTTON_CONFIRM) || (_stateTimer > 450)) {
             _screenState = 3;
             _stateTimer = 0;
         }
@@ -950,7 +950,7 @@ int _renderTimeAttackEnd(void)
 
         ++_screenTimer;
 
-        if ((vs_main_buttonsPressed.all & PADRright) || (_screenTimer >= 192)) {
+        if ((vs_main_buttonsPressed.all & VS_BUTTON_CONFIRM) || (_screenTimer >= 192)) {
 
             func_80045D64(0x7E, 0);
 
@@ -971,9 +971,9 @@ int _renderTimeAttackEnd(void)
 
         ++_screenTimer;
 
-        if ((vs_main_buttonsPressed.all & PADRright) || (_screenTimer >= 450)) {
+        if ((vs_main_buttonsPressed.all & VS_BUTTON_CONFIRM) || (_screenTimer >= 450)) {
 
-            if (vs_main_buttonsPressed.all & PADRright) {
+            if (vs_main_buttonsPressed.all & VS_BUTTON_CONFIRM) {
                 vs_main_playSfxDefault(0x7E, 5);
             }
 
@@ -1035,7 +1035,7 @@ int _renderTimeAttackStart(void)
 
         ++_screenTimer;
 
-        if (vs_main_buttonsPressed.all & PADRright) {
+        if (vs_main_buttonsPressed.all & VS_BUTTON_CONFIRM) {
             _screenState = 2;
             _screenTimer = 0;
         } else if (_screenTimer >= 90) {
@@ -1050,7 +1050,7 @@ int _renderTimeAttackStart(void)
         _renderBossName(160, 120, _screenTimer);
         _renderBestTimeHeader(160, 156, _screenTimer);
 
-        if ((vs_main_buttonsPressed.all & PADRright) || (_screenTimer == 0)) {
+        if ((vs_main_buttonsPressed.all & VS_BUTTON_CONFIRM) || (_screenTimer == 0)) {
             _screenState = 2;
             _screenTimer = 0;
         }
@@ -2152,7 +2152,7 @@ void _renderPressButtonPrompt(int x, int y, int arg2, int arg3)
     setPolyFT4(poly);
     setShadeTex(poly, 1);
     setXY4(poly, x, y - 2, x + 16, y - 2, x, y + 14, x + 16, y + 0xE);
-    setUV4(poly, 32, 128, 48, 128, 32, 144, 48, 144);
+    setUV4(poly, 48, 128, 64, 128, 48, 144, 64, 144);
     setTPage(poly, 0, 0, 768, 0);
     setClut(poly, 944, 223);
 
@@ -2452,7 +2452,7 @@ int _renderCubePuzzleStart(void)
         ++_screenTimer;
     }
 
-    if (vs_main_buttonsPressed.all & PADRright) {
+    if (vs_main_buttonsPressed.all & VS_BUTTON_CONFIRM) {
         if (_screenTimer >= 78) {
 
             func_80045D64(126, 0);
@@ -2538,7 +2538,7 @@ int _renderCubePuzzleEnd(void)
             ++_screenTimer;
         }
 
-        if (vs_main_buttonsPressed.all & PADRright) {
+        if (vs_main_buttonsPressed.all & VS_BUTTON_CONFIRM) {
             if (_screenTimer >= 138) {
 
                 func_80045D64(0x7E, 0);
@@ -2589,7 +2589,7 @@ int _renderCubePuzzleQuit(void)
         ++_screenTimer;
     }
 
-    if (vs_main_buttonsPressed.all & PADRright) {
+    if (vs_main_buttonsPressed.all & VS_BUTTON_CONFIRM) {
         if (_screenTimer > 62) {
 
             func_80045D64(0x7E, 0);

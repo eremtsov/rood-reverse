@@ -576,7 +576,7 @@ static int _menuManager(void)
             _setNextAction(_triggerHideUi == 0);
         }
 
-        if (vs_main_buttonsPressed.all & PADRright) {
+        if (vs_main_buttonsPressed.all & VS_BUTTON_CONFIRM) {
             var_s2 = 5;
 
             vs_main_playSfxDefault(0x7E, 5);
@@ -590,7 +590,7 @@ static int _menuManager(void)
 
             _mapSelectionMenu(1);
 
-        } else if (vs_main_buttonsPressed.all & (PADRup | PADRdown)) {
+        } else if (vs_main_buttonsPressed.all & (PADRup | VS_BUTTON_CANCEL)) {
 
             vs_main_playSfxDefault(0x7E, 6);
 
@@ -2033,7 +2033,7 @@ static void _drawUIControls(void)
         vs_mainmenu_renderButton(buttonIdR1, uiXOffset + 64, 15, s1[1] + 24);
         vs_mainmenu_renderButton(buttonIdL2, uiXOffset + 8, 33, s1[1] + 24);
         vs_mainmenu_renderButton(buttonIdR2, uiXOffset + 8, 52, s1[1] + 24);
-        vs_mainmenu_renderButton(buttonIdCircle, uiXOffset + 8, 70, s1[1] + 24);
+        vs_mainmenu_renderButton(buttonIdCross, uiXOffset + 8, 70, s1[1] + 24);
 
         switch (_menuCommandsState) {
         case 0: {

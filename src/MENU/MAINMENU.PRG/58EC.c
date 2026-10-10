@@ -238,7 +238,7 @@ void vs_mainMenu_renderItemActionMenu(void)
                 break;
             }
 
-            if (vs_main_buttonsPressed.all & PADRright) {
+            if (vs_main_buttonsPressed.all & VS_BUTTON_CONFIRM) {
                 if (menuItem->unselectable == 0) {
                     menuItem->selected = 1;
                     vs_main_freeHeapR(_sortItemsTextBuf);
@@ -255,7 +255,7 @@ void vs_mainMenu_renderItemActionMenu(void)
 
             menuItem->selected = 0;
 
-            if (vs_main_buttonsPressed.all & PADRdown) {
+            if (vs_main_buttonsPressed.all & VS_BUTTON_CANCEL) {
                 vs_main_freeHeapR(_sortItemsTextBuf);
                 _sortItemsTextBuf = NULL;
                 D_800F4EE8.cursorMemories[_actionsSubMenuId * 2] = _selectedItemAction;
@@ -1016,7 +1016,7 @@ void vs_mainMenu_renderItemsList(void)
                 return;
             }
 
-            if (vs_main_buttonsPressed.all & PADRright) {
+            if (vs_main_buttonsPressed.all & VS_BUTTON_CONFIRM) {
                 if (menuItem->unselectable == 0) {
 
                     menuItem->selected = 1;
@@ -1037,7 +1037,7 @@ void vs_mainMenu_renderItemsList(void)
 
             menuItem->selected = 0;
 
-            if (vs_main_buttonsPressed.all & PADRdown) {
+            if (vs_main_buttonsPressed.all & VS_BUTTON_CANCEL) {
 
                 vs_battle_playMenuLeaveSfx();
                 vs_main_freeHeapR(_itemsText);

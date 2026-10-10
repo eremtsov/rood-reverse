@@ -155,7 +155,7 @@ static void _renderRenameMenu(int xOffset)
 
     sp18 = (u_int*)vs_scratch.unk4 - 1;
 
-    vs_mainmenu_renderButton(buttonIdCross, (-xOffset + 16), 50, 0);
+    vs_mainmenu_renderButton(buttonIdCircle, (-xOffset + 16), 50, 0);
     vs_mainmenu_renderButton(buttonIdSquare, (-xOffset + 16), 66, 0);
     vs_mainmenu_renderButton(buttonIdTriangle, (-xOffset + 16), 82, 0);
     prim = vs_battle_setSpriteDefault(
@@ -400,13 +400,13 @@ static int _confirmationScreen(int init)
             vs_battle_getMenuItem(i + 20)->selected = (selectedRow ^ i) == 0;
         }
 
-        if (vs_main_buttonsPressed.all & (PADRright | PADRdown)) {
+        if (vs_main_buttonsPressed.all & (VS_BUTTON_CONFIRM | VS_BUTTON_CANCEL)) {
 
             for (i = 0; i < 3; ++i) {
                 vs_mainMenu_menuItemFlyoutRight(i + 20);
             }
 
-            if (vs_main_buttonsPressed.all & PADRdown) {
+            if (vs_main_buttonsPressed.all & VS_BUTTON_CANCEL) {
                 selectedRow = 1;
             }
 
@@ -516,7 +516,7 @@ static int _renameMenuInput(int initialize)
             break;
         }
 
-        if (vs_main_buttonRepeat & (1 << 6)) {
+        if (vs_main_buttonRepeat & VS_BUTTON_CANCEL) {
             vs_battle_playMenuChangeSfx();
 
             if (currentPos != 0) {
@@ -550,7 +550,7 @@ static int _renameMenuInput(int initialize)
             break;
         }
 
-        if (vs_main_buttonsPressed.all & (1 << 5)) {
+        if (vs_main_buttonsPressed.all & VS_BUTTON_CONFIRM) {
 
             switch (var_s1) {
             case 0:
@@ -637,7 +637,7 @@ static int _renameMenuInput(int initialize)
             break;
         }
 
-        if (vs_main_buttonsPressed.all & (1 << 5)) {
+        if (vs_main_buttonsPressed.all & VS_BUTTON_CONFIRM) {
 
             vs_battle_playMenuChangeSfx();
 
@@ -649,7 +649,7 @@ static int _renameMenuInput(int initialize)
             }
         }
 
-        if (vs_main_buttonRepeat & (1 << 6)) {
+        if (vs_main_buttonRepeat & VS_BUTTON_CANCEL) {
 
             vs_battle_playMenuChangeSfx();
 

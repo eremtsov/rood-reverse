@@ -722,18 +722,18 @@ int func_800C4794(SVECTOR* arg0)
         func_800C4650(D_800EB9B8->unk44, D_800EB9B8->unk2E);
     }
     if (offset.vec.pad == 0) {
-        if (vs_main_buttonsPressed.all & 0x40) {
+        if (vs_main_buttonsPressed.all & VS_BUTTON_CANCEL) {
             vs_battle_playMenuLeaveSfx();
             arg0->pad = 1;
             return 1;
         }
-        if (vs_main_buttonsPressed.all & 0x20) {
+        if (vs_main_buttonsPressed.all & VS_BUTTON_CONFIRM) {
             vs_battle_playMenuSelectSfx();
             D_800EB9B8->unk38.vec.pad = 1;
             D_800EB9B8->unk0[0].unk0 |= 0x80;
             D_800EB9B8->unk0[1].unk0 &= 0x7F;
         }
-    } else if (vs_main_buttonsPressed.all & 0x40) {
+    } else if (vs_main_buttonsPressed.all & VS_BUTTON_CANCEL) {
         vs_battle_playMenuLeaveSfx();
         D_800EB9B8->unk0[0].unk0 &= 0x7F;
         D_800EB9B8->unk0[1].unk0 |= 0x80;
@@ -744,7 +744,7 @@ int func_800C4794(SVECTOR* arg0)
                 func_8009FE74(trigger->unk9, trigger->unkA);
             }
         }
-    } else if (vs_main_buttonsPressed.all & 0x20) {
+    } else if (vs_main_buttonsPressed.all & VS_BUTTON_CONFIRM) {
         vs_battle_playMenuSelectSfx();
         result = 1;
     }
@@ -1098,7 +1098,7 @@ int func_800C58F8(u_char* target)
                 D_800EB9B8->unk990[D_800EB9B8->unk2D].unk1[2] = 0x12;
             }
             D_800EB9B8->unk990[D_800EB9B8->unk2D].unk1[0] = 0;
-            if (vs_main_buttonsPressed.all & 0x40) {
+            if (vs_main_buttonsPressed.all & VS_BUTTON_CANCEL) {
                 vs_battle_playMenuLeaveSfx();
                 func_800C56C0();
                 D_800EB9AC = D_800EB9B8->unk0[0].unk1 == 2;
@@ -1106,7 +1106,7 @@ int func_800C58F8(u_char* target)
                 break;
             }
             *target = D_800EB9B8->unk2D;
-            if (vs_main_buttonsPressed.all & 0x20) {
+            if (vs_main_buttonsPressed.all & VS_BUTTON_CONFIRM) {
                 func_800C56C0();
                 D_800EABAA = 20;
                 break;
@@ -2231,7 +2231,7 @@ void _renderTextImmediate(vs_battle_textBox* arg0, int arg1)
             } else {
                 switch (currentChar - '\f') {
                 case 2:
-                    if (vs_main_buttonsPressed.all & PADRright) {
+                    if (vs_main_buttonsPressed.all & VS_BUTTON_CONFIRM) {
                         arg0->speed = 0xFFFF;
                     }
                     done = 1;
@@ -2811,14 +2811,14 @@ int func_800C930C(int mode)
         return 0;
     }
 
-    if (vs_main_buttonsPressed.all & PADRright) {
+    if (vs_main_buttonsPressed.all & VS_BUTTON_CONFIRM) {
         vs_battle_playMenuSelectSfx();
         items[selected].backgroundWidth = items[selected].selected = 1;
         vs_battle_textBoxes[7].state = 0;
         return selected + 1;
     }
     items[selected].selected = 0;
-    if (vs_main_buttonsPressed.all & (PADRup | PADRdown)) {
+    if (vs_main_buttonsPressed.all & (PADRup | VS_BUTTON_CANCEL)) {
         vs_battle_playMenuLeaveSfx();
         vs_battle_textBoxes[7].state = 0;
         return -1;

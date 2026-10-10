@@ -1009,7 +1009,7 @@ static int _navigateStatusModifiers(vs_battle_actor2* actor, int arg1)
             return 2;
         }
 
-        if (vs_main_buttonsPressed.all & PADRdown) {
+        if (vs_main_buttonsPressed.all & VS_BUTTON_CANCEL) {
             return 3;
         }
 
@@ -1851,7 +1851,7 @@ static int _equipmentDetailScreen(int row)
             return -1;
         }
 
-        if (vs_main_buttonsPressed.all & PADRdown) {
+        if (vs_main_buttonsPressed.all & VS_BUTTON_CANCEL) {
             _initEquipmentScreen(_selectedActor - 1);
             _exitEquipmentDetail(1);
             vs_mainMenu_setMenuCommand(menuActionMenu);
@@ -2416,14 +2416,14 @@ int vs_menu4_exec(u_char* state)
                     *state = waitQuitToBattle;
                     break;
 
-                } else if (vs_main_buttonsPressed.all & PADRdown) {
+                } else if (vs_main_buttonsPressed.all & VS_BUTTON_CANCEL) {
 
                     vs_battle_playMenuLeaveSfx();
 
                     *state = waitQuitToMenu;
                     break;
 
-                } else if ((vs_main_buttonsPressed.all & PADRright)
+                } else if ((vs_main_buttonsPressed.all & VS_BUTTON_CONFIRM)
                            && ((_selectedElement < _getLimbCount(_selectedActor - 1))
                                != 0)) {
 
@@ -2685,7 +2685,7 @@ int vs_menu4_exec(u_char* state)
     case 9:
         if (animWait != 0) {
             _animationStep = 128 - vs_battle_rowAnimationSteps[--animWait];
-        } else if (vs_main_buttonsPressed.all & (PADRup | PADRdown)) {
+        } else if (vs_main_buttonsPressed.all & (PADRup | VS_BUTTON_CANCEL)) {
 
             vs_battle_playMenuLeaveSfx();
             vs_mainMenu_drawClassAffinityType(-1);

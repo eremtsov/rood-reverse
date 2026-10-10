@@ -371,12 +371,12 @@ loop_1:
                 return -2;
             }
 
-            if (vs_main_buttonsPressed.all & PADRdown) {
+            if (vs_main_buttonsPressed.all & VS_BUTTON_CANCEL) {
                 vs_battle_playMenuLeaveSfx();
                 return -1;
             }
 
-            if (vs_main_buttonsPressed.all & (PADRright | PADRleft)) {
+            if (vs_main_buttonsPressed.all & (VS_BUTTON_CONFIRM | PADRleft)) {
                 vs_battle_playInvalidSfx();
             }
         } else {

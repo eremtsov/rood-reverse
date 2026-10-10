@@ -335,7 +335,7 @@ static int _showMenu(void)
     case showSubMenu:
         currentPage = _scrollPosition / 10;
         lastPage = _lineCount / 10;
-        if (vs_main_buttonsPressed.all & (PADRright | PADRdown)) {
+        if (vs_main_buttonsPressed.all & (VS_BUTTON_CONFIRM | VS_BUTTON_CANCEL)) {
             _showMenuState = initMenu;
         }
         if (vs_main_buttonsPressed.all & PADRup) {
@@ -386,7 +386,7 @@ static int _showMenu(void)
         vs_mainmenu_renderButton(buttonIdSquare, 8, 16, s0[1] + 6);
         vs_battle_renderTextRawColor("TURN    PAGE", 0x12001C, 0x808080, s0[1] + 6);
         _drawControlsBg(0x10, 0x12, 0x60, 0xC);
-        vs_mainmenu_renderButton(buttonIdCircle, 8, 34, s0[1] + 6);
+        vs_mainmenu_renderButton(buttonIdCross, 8, 34, s0[1] + 6);
         vs_battle_renderTextRawColor("MENU", 0x24001C, 0x808080, s0[1] + 6);
         _drawControlsBg(0x10, 0x24, 0x40, 0xC);
         vs_battle_renderTextRawColor("PAGE", 0xC400D8, 0x808080, s0[1] + 7);
@@ -398,7 +398,7 @@ static int _showMenu(void)
             .scrollPositions[vs_battle_manualDisplayState.currentManual] =
             _scrollPosition;
         if (_showMenuState != showSubMenu) {
-            if (vs_main_buttonsPressed.all & PADRright) {
+            if (vs_main_buttonsPressed.all & VS_BUTTON_CONFIRM) {
                 vs_main_playSfxDefault(0x7E, VS_SFX_MENUSELECT);
             } else {
                 vs_main_playSfxDefault(0x7E, VS_SFX_MENULEAVE);

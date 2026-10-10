@@ -610,8 +610,8 @@ void vs_mainMenu_miscItemsShortcutMenu(int initialize)
 
     case waitForInput:
         if (noItems) {
-            if (vs_main_buttonsPressed.all & (PADRup | PADRright | PADRdown)) {
-                if (vs_main_buttonsPressed.all & PADRright) {
+            if (vs_main_buttonsPressed.all & (PADRup | VS_BUTTON_CONFIRM | VS_BUTTON_CANCEL)) {
+                if (vs_main_buttonsPressed.all & VS_BUTTON_CONFIRM) {
 
                     vs_battle_playInvalidSfx();
 

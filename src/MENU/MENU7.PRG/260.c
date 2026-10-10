@@ -1935,13 +1935,13 @@ static int _promptConfirm(int arg0)
     case handleInput:
         _fileMenuElements[cancelled + 3].selected = 1;
         _fileMenuElements[4 - cancelled].selected = 0;
-        if (vs_main_buttonsPressed.all & (PADRdown | PADRright)) {
+        if (vs_main_buttonsPressed.all & (VS_BUTTON_CANCEL | VS_BUTTON_CONFIRM)) {
             _selectCursorXy = 0;
             for (i = 3; i < 5; ++i) {
                 _fileMenuElements[i].state = 4;
                 _fileMenuElements[i].targetPosition = -126;
             }
-            if (vs_main_buttonsPressed.all & PADRright) {
+            if (vs_main_buttonsPressed.all & VS_BUTTON_CONFIRM) {
                 if (cancelled == 0) {
                     vs_main_playSfxDefault(0x7E, VS_SFX_MENUSELECT);
                     return 1;
@@ -2126,7 +2126,7 @@ static int _showSaveFilesMenu(int initPort)
         /* fallthrough */
     case handleInput:
         _memoryCardMessage = (char*)(_textTable + VS_MCMAN_BIN_OFFSET_selectFile);
-        if (vs_main_buttonsPressed.all & PADRdown) {
+        if (vs_main_buttonsPressed.all & VS_BUTTON_CANCEL) {
             vs_main_playSfxDefault(0x7E, VS_SFX_MENULEAVE);
             _selectCursorXy = 0;
             state = leave;
@@ -2136,7 +2136,7 @@ static int _showSaveFilesMenu(int initPort)
                 _fileMenuElements[i + 5].selected = 0;
             }
             val = slot + page;
-            if (vs_main_buttonsPressed.all & PADRright) {
+            if (vs_main_buttonsPressed.all & VS_BUTTON_CONFIRM) {
                 if (_saveFileInfo[val].unk4.base.slotState != slotStateUnavailable) {
                     vs_main_playSfxDefault(0x7E, VS_SFX_MENUSELECT);
                     _fileMenuElements[val + 5].selected = 1;
@@ -2562,7 +2562,7 @@ static int _showSaveMenu(int initState)
     case handleInput:
         _fileMenuElements[selectedFile].selected = 1;
         _fileMenuElements[3 - selectedFile].selected = 0;
-        if (vs_main_buttonsPressed.all & PADRdown) {
+        if (vs_main_buttonsPressed.all & VS_BUTTON_CANCEL) {
             vs_main_playSfxDefault(0x7E, VS_SFX_MENULEAVE);
             val = _dataNotSaved;
             _selectCursorXy = 0;
@@ -2581,7 +2581,7 @@ static int _showSaveMenu(int initState)
             } else {
                 state = returnNoSave;
             }
-        } else if (vs_main_buttonsPressed.all & PADRright) {
+        } else if (vs_main_buttonsPressed.all & VS_BUTTON_CONFIRM) {
             vs_main_playSfxDefault(0x7E, VS_SFX_MENUSELECT);
             _selectSaveMemoryCard(selectedFile);
             _selectCursorXy = 0;
@@ -2701,7 +2701,7 @@ static int _showLoadFilesMenu(int initPort)
         _memoryCardMessage = (char*)(_textTable + VS_MCMAN_BIN_OFFSET_selectFile);
         // fallthrough
     case handleInput:
-        if (vs_main_buttonsPressed.all & PADRdown) {
+        if (vs_main_buttonsPressed.all & VS_BUTTON_CANCEL) {
             vs_main_playSfxDefault(0x7E, VS_SFX_MENULEAVE);
             for (i = 5; i < 10; ++i) {
                 _clearFileMenuElement(i);
@@ -2716,7 +2716,7 @@ static int _showLoadFilesMenu(int initPort)
 
         currentSlot = slot + page;
 
-        if (vs_main_buttonsPressed.all & PADRright) {
+        if (vs_main_buttonsPressed.all & VS_BUTTON_CONFIRM) {
             if (_saveFileInfo[currentSlot].unk4.base.slotState >= slotStateInUse) {
                 vs_main_playSfxDefault(0x7E, VS_SFX_MENUSELECT);
                 _fileMenuElements[currentSlot + 5].selected = 1;
@@ -3011,7 +3011,7 @@ static int _loadFileMenu(int initFadeout)
     case handleInput:
         _fileMenuElements[selectedFile].selected = 1;
         _fileMenuElements[3 - selectedFile].selected = 0;
-        if (vs_main_buttonsPressed.all & PADRdown) {
+        if (vs_main_buttonsPressed.all & VS_BUTTON_CANCEL) {
             vs_main_playSfxDefault(0x7E, VS_SFX_MENULEAVE);
             _selectCursorXy = 0;
             for (i = 0; i < 3; ++i) {
@@ -3019,7 +3019,7 @@ static int _loadFileMenu(int initFadeout)
                 _fileMenuElements[i].targetPosition = 320;
             }
             state = exit;
-        } else if (vs_main_buttonsPressed.all & PADRright) {
+        } else if (vs_main_buttonsPressed.all & VS_BUTTON_CONFIRM) {
             vs_main_playSfxDefault(0x7E, VS_SFX_MENUSELECT);
             _selectLoadMemoryCard(selectedFile);
             _selectCursorXy = 0;
@@ -3253,7 +3253,7 @@ static int _displayGameOverScreen(int init)
     if (color1 < 128) {
         color1 += 8;
     } else {
-        if (vs_main_buttonsPressed.all & (PADstart | PADRright)) {
+        if (vs_main_buttonsPressed.all & (PADstart | VS_BUTTON_CONFIRM)) {
             vs_battle_playMenuSelectSfx();
             func_8004552C(1, 0, 60);
             color1 = -128;
@@ -3497,8 +3497,8 @@ static int _promptYesNo(int initParams)
                 vs_battle_playInvalidSfx();
             }
         }
-        if (buttons & (PADRup | PADRright | PADRdown)) {
-            if ((selectedOption != 0) || (buttons & (PADRup | PADRdown))) {
+        if (buttons & (PADRup | VS_BUTTON_CONFIRM | VS_BUTTON_CANCEL)) {
+            if ((selectedOption != 0) || (buttons & (PADRup | VS_BUTTON_CANCEL))) {
                 vs_battle_playMenuLeaveSfx();
                 vs_mainMenu_clearMenuExcept(vs_mainMenu_menuItemIds_none);
                 selectedOption = -1;

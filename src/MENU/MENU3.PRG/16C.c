@@ -179,7 +179,7 @@ static void _processEquipSubMenu(int hasSfx)
             break;
         }
 
-        if (vs_main_buttonsPressed.all & PADRright) {
+        if (vs_main_buttonsPressed.all & VS_BUTTON_CONFIRM) {
             if (menuItem->unselectable) {
                 vs_battle_playInvalidSfx();
             } else {
@@ -202,7 +202,7 @@ static void _processEquipSubMenu(int hasSfx)
 
         menuItem->selected = 0;
 
-        if (vs_main_buttonsPressed.all & PADRdown) {
+        if (vs_main_buttonsPressed.all & VS_BUTTON_CANCEL) {
 
             vs_battle_playMenuLeaveSfx();
             vs_main_freeHeapR(_itemsText);

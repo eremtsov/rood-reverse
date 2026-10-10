@@ -171,9 +171,9 @@ static int _confirmationPrompt(int arg0)
         }
         if (vs_main_buttonsPressed.all & PADRup) {
             action = 3;
-        } else if (vs_main_buttonsPressed.all & PADRdown) {
+        } else if (vs_main_buttonsPressed.all & VS_BUTTON_CANCEL) {
             action = 2;
-        } else if (vs_main_buttonsPressed.all & PADRright) {
+        } else if (vs_main_buttonsPressed.all & VS_BUTTON_CONFIRM) {
             action = selectedOption + 1;
         } else {
             if (vs_main_buttonRepeat & (PADLup | PADLdown)) {
@@ -243,9 +243,9 @@ static int _confirmCombine(int arg0)
         }
         if (vs_main_buttonsPressed.all & PADRup) {
             action = 3;
-        } else if (vs_main_buttonsPressed.all & PADRdown) {
+        } else if (vs_main_buttonsPressed.all & VS_BUTTON_CANCEL) {
             action = 2;
-        } else if (vs_main_buttonsPressed.all & PADRright) {
+        } else if (vs_main_buttonsPressed.all & VS_BUTTON_CONFIRM) {
             action = selectedOption + 1;
         } else {
             i = selectedOption;
@@ -516,7 +516,7 @@ static void _navigateItemsList(int arg0)
                 return;
             }
 
-            if (vs_main_buttonsPressed.all & PADRright) {
+            if (vs_main_buttonsPressed.all & VS_BUTTON_CONFIRM) {
                 if (menuItem->unselectable != 0) {
                     vs_battle_playInvalidSfx();
                 } else {
@@ -538,7 +538,7 @@ static void _navigateItemsList(int arg0)
 
             menuItem->selected = 0;
 
-            if (vs_main_buttonsPressed.all & PADRdown) {
+            if (vs_main_buttonsPressed.all & VS_BUTTON_CANCEL) {
 
                 vs_battle_playMenuLeaveSfx();
                 vs_main_freeHeapR(_itemsList);
@@ -1183,7 +1183,7 @@ static int _assembleMenu(int arg0)
                     _drawOk(gemSlots + 2, D_8010BB55);
                 }
 
-                if (vs_main_buttonsPressed.all & PADRdown) {
+                if (vs_main_buttonsPressed.all & VS_BUTTON_CANCEL) {
 
                     itemSlot = _popSelectionHistory(5);
                     _disassembleWeapon(_combiningItem);
@@ -1236,7 +1236,7 @@ static int _assembleMenu(int arg0)
 
                 i = selectedOption;
 
-                if (vs_main_buttonsPressed.all & PADRright) {
+                if (vs_main_buttonsPressed.all & VS_BUTTON_CONFIRM) {
                     vs_battle_playMenuSelectSfx();
                     if (i == (gemSlots + 2)) {
                         state = 6;
@@ -1710,7 +1710,7 @@ static int _attachGemsMenu(int arg0)
             if (!(vs_main_buttonsPressed.all & PADRup)) {
                 D_8010BB57 += 16;
                 _drawOk(gemSlots + ((1 - isShield) * 2), D_8010BB57);
-                if (vs_main_buttonsPressed.all & PADRdown) {
+                if (vs_main_buttonsPressed.all & VS_BUTTON_CANCEL) {
                     _attachGems(targetGems, isShield);
                     state = 0;
                 } else if (vs_main_buttonsPressed.all & PADstart) {
@@ -1722,7 +1722,7 @@ static int _attachGemsMenu(int arg0)
                     D_8010BC22 = gemSlots;
                 } else {
                     itemInfo = D_8010BC22;
-                    if (vs_main_buttonsPressed.all & PADRright) {
+                    if (vs_main_buttonsPressed.all & VS_BUTTON_CONFIRM) {
                         vs_battle_playMenuSelectSfx();
                         if (itemInfo == gemSlots) {
                             state = 7;
@@ -2843,7 +2843,7 @@ static int _combineBladeMenu(int arg0)
                 _drawOk(2, D_8010BC64);
             }
 
-            if (vs_main_buttonsPressed.all & PADRdown) {
+            if (vs_main_buttonsPressed.all & VS_BUTTON_CANCEL) {
 
                 temp_v0_2 = _popSelectionHistory(5);
 
@@ -2890,7 +2890,7 @@ static int _combineBladeMenu(int arg0)
 
             i_2 = D_8010BC63;
 
-            if (vs_main_buttonsPressed.all & PADRright) {
+            if (vs_main_buttonsPressed.all & VS_BUTTON_CONFIRM) {
                 if (i_2 == 0) {
                     vs_battle_playInvalidSfx();
                 } else {
@@ -3440,7 +3440,7 @@ static int _combineShieldMenu(int arg0)
                     _drawOk(2, D_8010BC70);
                 }
 
-                if (vs_main_buttonsPressed.all & PADRdown) {
+                if (vs_main_buttonsPressed.all & VS_BUTTON_CANCEL) {
 
                     temp_s2 = _popSelectionHistory(5);
 
@@ -3485,7 +3485,7 @@ static int _combineShieldMenu(int arg0)
 
                 temp_s2 = D_8010BC6F;
 
-                if (vs_main_buttonsPressed.all & PADRright) {
+                if (vs_main_buttonsPressed.all & VS_BUTTON_CONFIRM) {
 
                     if (temp_s2 == 0) {
                         vs_battle_playInvalidSfx();
@@ -3980,7 +3980,7 @@ static int _combineArmorMenu(int arg0)
                 if (var_s1 != 0) {
                     _drawOk(2, D_8010BC7C);
                 }
-                if (vs_main_buttonsPressed.all & PADRdown) {
+                if (vs_main_buttonsPressed.all & VS_BUTTON_CANCEL) {
                     int temp_v0_2 = _popSelectionHistory(5);
                     if (temp_v0_2 != 0) {
                         vs_battle_playMenuLeaveSfx();
@@ -4012,7 +4012,7 @@ static int _combineArmorMenu(int arg0)
                     }
                 }
                 i_2 = D_8010BC7B;
-                if (vs_main_buttonsPressed.all & PADRright) {
+                if (vs_main_buttonsPressed.all & VS_BUTTON_CONFIRM) {
                     if (i_2 == 0) {
                         vs_battle_playInvalidSfx();
                     } else {

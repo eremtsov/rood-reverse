@@ -873,7 +873,7 @@ int _weaponNavigation(int weaponIndex)
         D_80109A30 = handleInput;
         break;
     case handleInput:
-        if (vs_main_buttonsPressed.all & (PADRup | PADRdown)) {
+        if (vs_main_buttonsPressed.all & (PADRup | VS_BUTTON_CANCEL)) {
             func_80104170(1);
             D_80109A30 = exit;
         } else {
@@ -940,7 +940,7 @@ int _bladeNavigation(int bladeIndex)
         }
         break;
     case handleInput:
-        if (vs_main_buttonsPressed.all & (PADRup | PADRdown)) {
+        if (vs_main_buttonsPressed.all & (PADRup | VS_BUTTON_CANCEL)) {
             func_80104170(1);
             D_80109A35 = exit;
         } else {
@@ -1003,7 +1003,7 @@ int _gripNavigation(int arg0)
         }
         break;
     case 2:
-        if (vs_main_buttonsPressed.all & (PADRup | PADRdown)) {
+        if (vs_main_buttonsPressed.all & (PADRup | VS_BUTTON_CANCEL)) {
             func_80104170(0);
             D_80109A39 = 3U;
         } else {
@@ -1081,7 +1081,7 @@ int _shieldNavigation(int arg0)
         }
         break;
     case 2:
-        if (vs_main_buttonsPressed.all & (PADRup | PADRdown)) {
+        if (vs_main_buttonsPressed.all & (PADRup | VS_BUTTON_CANCEL)) {
             func_80104170(1);
             D_80109A3E = 3;
         } else {
@@ -1151,7 +1151,7 @@ int _armorNavigation(int arg0)
         }
         break;
     case 2:
-        if (vs_main_buttonsPressed.all & (PADRup | PADRdown)) {
+        if (vs_main_buttonsPressed.all & (PADRup | VS_BUTTON_CANCEL)) {
             func_80104170(1);
             D_80109A43 = 3;
         } else {
@@ -1210,7 +1210,7 @@ int _gemNavigation(int arg0)
         }
         break;
     case 2:
-        if (vs_main_buttonsPressed.all & (PADRup | PADRdown)) {
+        if (vs_main_buttonsPressed.all & (PADRup | VS_BUTTON_CANCEL)) {
             func_80104170(0);
             D_80109A47 = 3;
             D_80109A84 = vs_main_buttonsPressed.all & 0x10;
@@ -1799,14 +1799,14 @@ int _discardMenu(int arg0)
         state = determineDiscardAmount;
         // Fallthrough
     case determineDiscardAmount:
-        if (vs_main_buttonsPressed.all & (PADRup | PADRright | PADRdown)) {
+        if (vs_main_buttonsPressed.all & (PADRup | VS_BUTTON_CONFIRM | VS_BUTTON_CANCEL)) {
             i = vs_battle_toBCD(discardCount);
             countTemplate[4] = i & 0xF;
             i = vs_battle_toBCD(i >> 4);
             countTemplate[3] = i & 0xF;
             countTemplate[2] = i >> 4;
             vs_battle_setMenuItem(0x22, 0, 0x82, 0x7E, 0, countTemplate);
-            if (vs_main_buttonsPressed.all & (PADRup | PADRdown)) {
+            if (vs_main_buttonsPressed.all & (PADRup | VS_BUTTON_CANCEL)) {
                 vs_battle_playMenuLeaveSfx();
                 if ((vs_main_buttonsPressed.all & PADRup)) {
                     return -2;
@@ -2490,7 +2490,7 @@ loop_1:
                 vs_battle_playMenuLeaveSfx();
                 return -2;
             }
-            if (vs_main_buttonsPressed.all & 0x40) {
+            if (vs_main_buttonsPressed.all & VS_BUTTON_CANCEL) {
                 vs_battle_playMenuLeaveSfx();
                 if (vs_menu_inventoryStorage->itemsToTransfer[0] == 0) {
                     return -1;
@@ -2505,7 +2505,7 @@ loop_1:
                 }
                 break;
             }
-            if (vs_main_buttonsPressed.all & 0xA0) {
+            if (vs_main_buttonsPressed.all & (VS_BUTTON_CONFIRM | PADRleft)) {
                 vs_battle_playInvalidSfx();
             }
         } else {
@@ -3086,11 +3086,11 @@ int func_801089BC(int arg0)
             vs_mainMenu_clearMenuExcept(vs_mainMenu_menuItemIds_none);
             return -2;
         }
-        if (vs_main_buttonsPressed.all & 0x40) {
+        if (vs_main_buttonsPressed.all & VS_BUTTON_CANCEL) {
             vs_battle_playMenuLeaveSfx();
             return -1;
         }
-        if (vs_main_buttonsPressed.all & 0x20) {
+        if (vs_main_buttonsPressed.all & VS_BUTTON_CONFIRM) {
             vs_battle_playMenuSelectSfx();
             return var_s1 + 1;
         }
@@ -3304,7 +3304,7 @@ int vs_menuD_exec(u_char* arg0)
         temp_s0 = i - 8;
         vs_mainmenu_renderButton(buttonIdSquare, temp_s0, 0x24, NULL);
         vs_mainmenu_renderButton(buttonIdTriangle, i + 0x40, 0x24, NULL);
-        vs_mainmenu_renderButton(buttonIdCross, temp_s0, 0x34, NULL);
+        vs_mainmenu_renderButton(buttonIdCircle, temp_s0, 0x34, NULL);
         s3 = (i + 0xC) & 0xFFFF;
         vs_battle_renderTextRawColor(
             "STATUS", s3 | 0x260000, 0x202020 << (D_80109A7D & 3), NULL);

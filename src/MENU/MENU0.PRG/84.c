@@ -355,7 +355,7 @@ int _warlockMagicMenu(u_int initShortcutInvoked)
             break;
         }
 
-        if (vs_main_buttonsPressed.all & PADRdown) {
+        if (vs_main_buttonsPressed.all & VS_BUTTON_CANCEL) {
 
             vs_battle_playMenuLeaveSfx();
 
@@ -367,7 +367,7 @@ int _warlockMagicMenu(u_int initShortcutInvoked)
             break;
         }
 
-        if (vs_main_buttonsPressed.all & PADRright) {
+        if (vs_main_buttonsPressed.all & VS_BUTTON_CONFIRM) {
             if (vs_battle_getActionFlags(0, selectedRow + i) == 0) {
 
                 vs_battle_playMenuSelectSfx();

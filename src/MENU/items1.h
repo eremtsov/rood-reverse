@@ -147,7 +147,7 @@ static int _weaponStatusView(int itemInfo)
         break;
 
     case manageInput:
-        if (vs_main_buttonsPressed.all & (PADRup | PADRdown)) {
+        if (vs_main_buttonsPressed.all & (PADRup | VS_BUTTON_CANCEL)) {
             _exitStatusView(1);
             state = 3;
             break;
@@ -236,7 +236,7 @@ static int _bladeStatusView(int itemInfo)
         break;
 
     case manageInput:
-        if (vs_main_buttonsPressed.all & (PADRup | PADRdown)) {
+        if (vs_main_buttonsPressed.all & (PADRup | VS_BUTTON_CANCEL)) {
             _exitStatusView(1);
             state = returnMenuReady;
             break;
@@ -318,7 +318,7 @@ static int _gripStatusView(int itemInfo)
         break;
 
     case manageInput:
-        if (vs_main_buttonsPressed.all & (PADRup | PADRdown)) {
+        if (vs_main_buttonsPressed.all & (PADRup | VS_BUTTON_CANCEL)) {
             _exitStatusView(0);
             state = returnMenuReady;
         } else {
@@ -420,7 +420,7 @@ static int _shieldStatusView(int itemInfo)
         break;
 
     case manageInput:
-        if (vs_main_buttonsPressed.all & (PADRup | PADRdown)) {
+        if (vs_main_buttonsPressed.all & (PADRup | VS_BUTTON_CANCEL)) {
             _exitStatusView(1);
             state = returnMenuReady;
             break;
@@ -510,7 +510,7 @@ static int _armorStatusView(int itemInfo)
         break;
 
     case manageInput:
-        if (vs_main_buttonsPressed.all & (PADRup | PADRdown)) {
+        if (vs_main_buttonsPressed.all & (PADRup | VS_BUTTON_CANCEL)) {
             _exitStatusView(1);
             status = returnMenuReady;
 
@@ -595,7 +595,7 @@ static int _gemStatusView(int itemInfo)
         break;
 
     case manageInput:
-        if (vs_main_buttonsPressed.all & (PADRup | PADRdown)) {
+        if (vs_main_buttonsPressed.all & (PADRup | VS_BUTTON_CANCEL)) {
             _exitStatusView(0);
 
             state = returnMenuReady;
@@ -1312,7 +1312,7 @@ static int _discardMenu(int params)
         // Fallthrough
 
     case determineDiscardAmount:
-        if (vs_main_buttonsPressed.all & (PADRup | PADRright | PADRdown)) {
+        if (vs_main_buttonsPressed.all & (PADRup | VS_BUTTON_CONFIRM | VS_BUTTON_CANCEL)) {
 
             i = vs_battle_toBCD(discardCount);
 
@@ -1325,7 +1325,7 @@ static int _discardMenu(int params)
 
             vs_battle_setMenuItem(34, 0, 130, 126, 0, discardTemplate);
 
-            if (vs_main_buttonsPressed.all & (PADRup | PADRdown)) {
+            if (vs_main_buttonsPressed.all & (PADRup | VS_BUTTON_CANCEL)) {
 
                 vs_battle_playMenuLeaveSfx();
 
