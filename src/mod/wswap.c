@@ -92,16 +92,22 @@ extern const u_char wl_hint[];       /* "SELECT: ASSIGN", followed by "ASSIGN: P
 /* wl_lab: positions of the game label sprites (tables at 0x800EBC98..0x800EBCDF in
  * BATTLE.PRG: bullets, labels, label widths) with the overlay fully slid in; the button
  * group (id 0..3) moves with +step, the D-pad group (id 4..7) with -step. Labels of odd
- * id end at x (the game draws them right-aligned against their button; here 2 px short).
- * The width budgets (pixels, the small font is 6 px per character) keep neighbouring
- * labels apart.
+ * id end at x. Native labels are pictures at fixed positions; the mod's text is anchored to
+ * the bullets instead: left-aligned (even id) starting at the picture's x, right-aligned (odd
+ * id) ending at about the bullet. Fields: x, y of the text, x, y of the bullet, the budget in
+ * characters (6 px each), the slot. The budgets are as long as the screen allows (>= 4 px
+ * from the screen edge, from any other label, glyph or bullet; text rows [y+1, y+10)):
+ *   Triangle 12, Square 17, Circle 10, Cross 19, Up 21, Left 11, Right 17, Down 12.
+ * Square is raised 5 px and D-pad Right lowered 6 px (Cross 1 px) so that the centre labels
+ * Up, Square, Right and Cross no longer share a text row; the Left label ends at its bullet
+ * (the native Left picture ends 14 px behind it). tools/mod/test_wswap.py recomputes all of it.
  * wl_pal: palettes of the game's small font (VRAM clut row y=222, x = 832 + 16 * n):
  * 4 white, 5 yellow, 6 red-orange, 7 dim slate. [0..1] = weapon / equipped, [2..3] the same
  * in assign mode, [4] hint, [5] assign prompt. */
 __asm__(".section .wd1,\"a\",@progbits\n"
         ".globl wl_lab\nwl_lab:\n"
-        ".byte 242,99,237,101,74,2, 214,113,213,115,54,3, 252,111,247,113,64,1, 223,125,223,127,100,4\n"
-        ".byte 94,99,89,101,110,5, 82,112,70,115,76,8, 103,111,98,113,52,7, 81,124,80,127,75,6\n"
+        ".byte 242,99,237,101,12,2, 214,108,213,115,17,3, 252,111,247,113,10,1, 223,126,223,127,19,4\n"
+        ".byte 94,99,89,101,21,5, 71,112,70,115,11,8, 103,117,98,113,17,7, 81,124,80,127,12,6\n"
         ".text");
 __asm__(".section .wd2,\"a\",@progbits\n"
         ".globl wl_slotBit\nwl_slotBit:\n.byte 5,4,7,6,12,14,13,15\n"
@@ -124,11 +130,17 @@ __asm__(".section " SEC_WD3 ",\"a\",@progbits\n"
  * unreferenced functions (see tools/mod/wswap.ld) */
 #define PLACE(sec) __asm__(".section " sec ",\"ax\",@progbits")
 #define UNPLACE() __asm__(".text")
-/* .wZ: func_800D9910 (604 bytes), only used by the default variant */
+/* Which unreferenced function range holds what (tools/mod/wswap.ld); the classic variant uses fewer. */
 #if WSWAP_CLASSIC
-#define PLACE_Z() UNPLACE()
+#define PLACE_BEGIN() PLACE(".wswap2")   /* beginSwap, inSlot */
+#define PLACE_INSLOT() PLACE(".wswap2")
+#define PLACE_LABEL() PLACE(".wA")       /* wslot_label */
+#define PLACE_START() UNPLACE()          /* startSwap: tail */
 #else
-#define PLACE_Z() PLACE(".wZ")
+#define PLACE_LABEL() PLACE(".wswap2")   /* wslot_label, startSwap */
+#define PLACE_START() PLACE(".wswap2")
+#define PLACE_BEGIN() PLACE(".wA")       /* beginSwap */
+#define PLACE_INSLOT() PLACE(".wY")      /* inSlot: func_800A1B28 */
 #endif
 
 /* mod state, lives in the blob's own zero-initialised data */
@@ -149,7 +161,6 @@ static int s_assign;  /* 1: the next slot button assigns the equipped weapon */
 static int s_raw;     /* physical D-pad bits (12..15) of the previous frame */
 
 /* index of the equipped weapon slot, or -1 */
-PLACE_Z();
 static int equippedSlot(void)
 {
     vs_main_inventoryWeapon* w = vs_main_inventory.weapons;
@@ -167,7 +178,7 @@ UNPLACE();
 
 /* Same sequence as the equip menu (MENU3.PRG _equipWeaponMenu + _loadObjectData),
  * applied to the real actor 0. The load queue is processed by the main loop. */
-PLACE(".wswap2");
+PLACE_BEGIN();
 static void beginSwap(vs_main_inventoryWeapon* w)
 {
     vs_main_inventoryBlade* b = &vs_main_inventory.blades[w->blade - 1];
@@ -232,7 +243,7 @@ static int swapAllowed(void)
 UNPLACE();
 
 /* sound, then sheathe first when the weapon is drawn, else swap at once */
-PLACE_T(".wF");
+PLACE_START();
 static void startSwap(vs_main_inventoryWeapon* t)
 {
     vs_battle_playMenuChangeSfx();
@@ -254,7 +265,7 @@ static void startSwap(vs_main_inventoryWeapon* t)
 UNPLACE();
 
 /* weapon whose slot is n (1..8), or NULL */
-PLACE(".wswap2");
+PLACE_INSLOT();
 static vs_main_inventoryWeapon* inSlot(int n)
 {
     vs_main_inventoryWeapon* w = vs_main_inventory.weapons;
@@ -334,14 +345,15 @@ UNPLACE();
 
 #if !WSWAP_CLASSIC
 /* the next assigned weapon after slot cur (0..9) in direction dir, not the equipped one */
-PLACE_Z();
+PLACE(".wX"); /* func_80099FA8 */
 static vs_main_inventoryWeapon* nextSlot(int cur, int dir)
 {
     vs_main_inventoryWeapon* p;
     int j;
 
-    for (j = 1; j <= 8; ++j) {
-        p = inSlot(((cur - 1 + dir * j) & 7) + 1);
+    for (j = 8; j != 0; --j) {
+        cur = ((cur - 1 + dir) & 7) + 1;
+        p = inSlot(cur);
         if (p && !p->isEquipped) {
             return p;
         }
@@ -351,37 +363,43 @@ static vs_main_inventoryWeapon* nextSlot(int cur, int dir)
 UNPLACE();
 #endif
 
-/* Text in the game's small font (the menu item font: font table 0, 6 px per character, the
- * glyph cells are in VRAM whenever the field runs). s is in the game encoding, as many
- * characters as fit into budget pixels are drawn. flags: bits 0-1 alignment of x (0 left,
- * 1 centre, 2 right: the text ends at x), bits 2.. the font palette. A space is not drawn
- * at all (the font routine just advances), which the raw-text font gets wrong in the field.
- * The sprites are linked at vs_scratch.unk8, like vs_battle_renderTextRaw does. */
+/* Text in the game's small font (the menu item font: font table 0, glyph cells in VRAM whenever the
+ * field runs). s is in the game encoding; at most max characters are drawn, 6 px each (every glyph of
+ * the font is 6 px wide; the odd 12 px symbols do not occur in names). flags: bits 0-2 alignment of
+ * x (0 left, 3 centre, 6 right: the text ends at x; the value is the pixels per character that the
+ * start moves left), bits 3.. the font palette.
+ * Blanks: names are terminated by 0xE7 and separate their words with `0xFA n` (vs_char_spacing,
+ * n = 6 in all names, the width of a space); prose uses the space glyph 0x8F. Both are drawn as one
+ * 0x8F (the font routine draws nothing for it and advances 6 px), which the raw-text font gets wrong
+ * in the field. Trailing blanks are dropped. The sprites are linked at vs_scratch.unk8, like
+ * vs_battle_renderTextRaw does. */
 PLACE(".wC");
-static void drawSmall(u_char const* s, int xy, int budget, int flags)
+static void drawSmall(u_char const* s, int xy, int max, int flags)
 {
     u_char const* e = s;
-    int wd = 0;
+    int n = 0; /* characters that fit */
+    int k = 0; /* characters up to the last visible one */
     int x = (short)xy;
     int c;
 
-    while ((e - s < 24) && ((c = *e) < 0xAE)) {
-        c = vs_battle_characterWidths[c];
-        if (wd + c > budget) {
-            break;
+    while ((n < max) && ((c = *e) != 0xE7)) {
+        ++n;
+        e += 1 + (c == 0xFA);
+        if ((c != 0xFA) && (c != 0x8F)) {
+            k = n;
         }
-        wd += c;
-        ++e;
     }
-    while ((e > s) && (e[-1] == 0x8F)) {
-        --e;
-        wd -= 6;
-    }
-    x -= (wd * (flags & 3)) >> 1;
-    vs_battle_setFontStyle(flags >> 2);
-    for (; s != e; ++s) {
+    x -= k * (flags & 7);
+    vs_battle_setFontStyle(flags >> 3);
+    for (; k != 0; --k) {
+        c = *s;
+        if (c == 0xFA) {
+            c = 0x8F;
+            ++s;
+        }
+        ++s;
         x = vs_battle_printVariableWidthFontChar(
-            *s, x, (xy >> 16) - 1, (u_long*)((char*)vs_scratch.unk8 - 12));
+            c, x, (xy >> 16) - 1, (u_long*)((char*)vs_scratch.unk8 - 12));
     }
 }
 UNPLACE();
@@ -390,7 +408,7 @@ UNPLACE();
 PLACE_T(".wH");
 static void drawHint(void)
 {
-    drawSmall(wl_hint + s_assign * 16, 160 | (142 << 16), 320, 1 | (wl_pal[4 + s_assign] << 2));
+    drawSmall(wl_hint + s_assign * 16, 160 | (142 << 16), 30, 3 | (wl_pal[4 + s_assign] << 3));
 }
 UNPLACE();
 
@@ -398,7 +416,7 @@ UNPLACE();
  * called once per label, id 4..7 (D-pad group) then 0..3 (button group). Outside the
  * weapon mode it is the original. In weapon mode the label picture is not drawn
  * (return 0): the bullet and the weapon name are drawn here instead. */
-PLACE(".wA");
+PLACE_LABEL();
 int wslot_label(int id)
 {
     vs_main_inventoryWeapon* w;
@@ -418,7 +436,7 @@ int wslot_label(int id)
     if (w) { /* an empty slot shows the bullet only */
         /* odd id: right aligned, the label ends at x */
         drawSmall((u_char*)w->name, ((t[0] + step) & 0xFFFF) | (t[1] << 16), t[4],
-            ((id & 1) << 1) | (wl_pal[s_assign * 2 + (w->isEquipped & 1)] << 2));
+            ((id & 1) * 6) | (wl_pal[s_assign * 2 + (w->isEquipped & 1)] << 3));
     }
     if ((id == 4) && (D_800EBCE8 == 0)) {
         drawHint();
@@ -478,22 +496,24 @@ UNPLACE();
 /* First-person view (func_8006EC7C, called from vs_battle_exec at 0x8007A10C in game mode 7):
  * the right stick looks around as well, at the speed of the left stick, up/down inverted like
  * the edited left stick/D-pad code of the original. The original then clamps the pitch. */
-PLACE_Z();
+PLACE(".wF"); /* func_800733F8 */
 void wfp_look(void)
 {
-    int dx = vs_main_stickPosBuf.lStickX - 128; /* decomp lStick = physical right stick */
-    int dy = vs_main_stickPosBuf.lStickY - 128;
+    portInfo_t* p = _portInfo;
+    int prev = vs_main_buttonsPreviousState;
+    int x = p->rStickX; /* decomp rStick = physical left stick: the one the original reads */
+    int y = p->rStickY;
 
-    if ((u_int)(dx + 64) > 128) {
-        dx += (dx > 0) ? -64 : 64;
-        vs_battle_cameraCurrentSpherical.values.yaw =
-            (vs_battle_cameraCurrentSpherical.values.yaw + dx / 3) & 0xFFF;
-    }
-    if ((u_int)(dy + 64) > 128) {
-        dy += (dy > 0) ? -64 : 64;
-        vs_battle_cameraCurrentSpherical.values.pitch -= dy / 3;
-    }
+    func_8006EC7C(); /* D-pad and left stick, as in the game */
+    /* the same update once more with the right stick (decomp lStick) in the left stick's place and
+     * without the D-pad (it has been applied), so that both sticks add up, same speed and dead zone */
+    p->rStickX = p->lStickX;
+    p->rStickY = p->lStickY;
+    vs_main_buttonsPreviousState = prev & ~(PADLup | PADLright | PADLdown | PADLleft);
     func_8006EC7C();
+    p->rStickX = x;
+    p->rStickY = y;
+    vs_main_buttonsPreviousState = prev;
 }
 UNPLACE();
 #endif

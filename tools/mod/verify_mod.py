@@ -67,7 +67,8 @@ if not CLASSIC:
     DEAD['.wE'] = (0x8009BD90, 204, 'func_8009BD90')
     DEAD['.wF'] = (0x800733F8, 140, 'func_800733F8')
     DEAD['.wH'] = (0x8007FF8C, 116, 'func_8007FF8C')
-    DEAD['.wZ'] = (0x800D9910, 604, 'func_800D9910')
+    DEAD['.wX'] = (0x80099FA8, 128, 'func_80099FA8')
+    DEAD['.wY'] = (0x800A1B28, 116, 'func_800A1B28')
     HOOKS.append((0x8007A10C, 'vs_battle_exec: jal func_8006EC7C (first person look)', 'wfp_look'))
     # func_8006EC7C: D-pad up/down masks swapped, stick pitch term addu -> subu
     DECOMP_WORDS = [0x8006EC8C, 0x8006ECD4, 0x8006EE50]

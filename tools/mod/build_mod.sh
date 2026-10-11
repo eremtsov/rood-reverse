@@ -36,12 +36,12 @@ PRG=$B/data/BATTLE/BATTLE.PRG
 DEAD="wswap2:800B26B8:496 wA:800D197C:412 wB:800AA108:392 wC:800D155C:284 wD:80099854:268"
 # The classic variant (src/mod/wswap.c: #define WSWAP_CLASSIC 1) is smaller: swapAllowed, startSwap and drawHint stay
 # in the tail (func_8009BD90, func_800733F8, func_8007FF8C are not touched), and it has no first-person look hook.
-# The default variant uses those three and additionally func_800D9910.
+# The default variant uses those three and additionally func_80099FA8 and func_800A1B28.
 if grep -q '^#define WSWAP_CLASSIC 1' src/mod/wswap.c; then
     CLASSIC=1
 else
     CLASSIC=0
-    DEAD="$DEAD wE:8009BD90:204 wF:800733F8:140 wH:8007FF8C:116 wZ:800D9910:604"
+    DEAD="$DEAD wE:8009BD90:204 wF:800733F8:140 wH:8007FF8C:116 wX:80099FA8:128 wY:800A1B28:116"
 fi
 
 die() { echo "build_mod: $*" >&2; exit 1; }
