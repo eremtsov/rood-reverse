@@ -1,4 +1,4 @@
-> **This fork contains a personal QoL mod for Vagrant Story** (western confirm/cancel, favorite-weapon quick swap on L1/R1, camera on the right stick). See [MOD.md](MOD.md). It is not part of upstream rood-reverse.
+> **This fork contains a personal QoL mod for Vagrant Story**: weapon slots on L2 + R2 in both variants; the default variant also has western confirm/cancel, mirrored field buttons and reworked camera, first-person and map controls. See [MOD.md](MOD.md). It is not part of upstream rood-reverse.
 
 # Rood Reverse
 
