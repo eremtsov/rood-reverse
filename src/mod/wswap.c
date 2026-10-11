@@ -47,8 +47,8 @@
  * without a shield on); clearing a slot clears its bit. A swap makes the shield match the slot: the slot's shield
  * is put on (nothing to do if it already is), a slot without a (still existing) shield takes the shield off, a
  * two-handed weapon takes it off. The steps are those of the equip menus (flags, vs_battle_equipShield, model
- * slot, model load), inside the same state machine. shieldMigrate() gives the equipped shield the bits of all
- * one-handed slots as long as no shield has any bit, so that v3 slots keep the shield.
+ * slot, model load), inside the same state machine. Start in the overlay (shieldAll) writes the equipped shield
+ * into all occupied one-handed slots; there is no automatic migration of v3 slots.
  *
  * The two `jal func_800C9EB8` in the overlay drawing function func_800C9FE8 are
  * redirected to wslot_label, which returns the original answer unless s_wmode is set.
@@ -98,7 +98,8 @@ extern void vs_battle_playInvalidSfx(void);
 extern const u_char wl_lab[];        /* per overlay label id: x, y, bullet x, bullet y, width budget, slot */
 extern const u_char wl_slotBit[];    /* slot 0..7 -> bit number in the button words */
 extern const u_char wl_pal[];        /* small-font palettes, see wslot_label */
-extern const u_char wl_hint[];       /* "SELECT: ASSIGN", followed by "ASSIGN: PRESS A SLOT" (game encoding) */
+extern const u_char wl_hint[];       /* "SELECT: ASSIGN  START: SHIELD" (32 bytes), then "ASSIGN: PRESS A SLOT" (game encoding) */
+extern void vs_main_playSfxDefault(int, int);
 /* wl_lab: positions of the game label sprites (tables at 0x800EBC98..0x800EBCDF in
  * BATTLE.PRG: bullets, labels, label widths) with the overlay fully slid in; the button
  * group (id 0..3) moves with +step, the D-pad group (id 4..7) with -step. Labels of odd
@@ -126,7 +127,7 @@ __asm__(".section .wd2,\"a\",@progbits\n"
 /* game encoding: A..Z = 10..35, ':' = 0x9E, ' ' = 0x8F, terminator 0xE7 */
 __asm__(".section " SEC_WD3 ",\"a\",@progbits\n"
         ".globl wl_hint\nwl_hint:\n"
-        ".byte 28,14,21,14,12,29,0x9E,0x8F,10,28,28,18,16,23,0xE7,0\n"
+        ".byte 28,14,21,14,12,29,0x9E,0x8F,10,28,28,18,16,23,0x8F,0x8F,28,29,10,27,29,0x9E,0x8F,28,17,18,14,21,13,0xE7,0,0\n"
         ".byte 10,28,28,18,16,23,0x9E,0x8F,25,27,14,28,28,0x8F,10,0x8F,28,21,24,29,0xE7\n"
         ".text");
 
@@ -142,12 +143,12 @@ __asm__(".section " SEC_WD3 ",\"a\",@progbits\n"
 #define UNPLACE() __asm__(".text")
 /* Which unreferenced function range holds what (tools/mod/wswap.ld; sizes in bytes). Both variants place the
  * v3.1 code the same way (the default one also has the camera/look code in .wswap2/.wB/.wE/.wF/.wH):
- *   .wswap2 wslot_label, shieldMigrate (swapLR is in .wB)   .wA beginSwap     .wD shieldSwap + the label table
+ *   .wswap2 wslot_label, shieldAll   .wE swapAllowed, swapLR   .wA beginSwap   .wD shieldSwap + the label table   .wX1 inSlot + hint strings
  *   .wR1 startSwap   .wR2 shieldBind   .wX1 inSlot   .wX2 equippedSlot   .wX3 twoHanded
  * The tail of BATTLE.PRG keeps wswap_entry, migrate, assign, the state (default: also swapLR in .wB). */
 #define PLACE_BEGIN() PLACE(".wA")
 #define PLACE_LABEL() PLACE(".wswap2")
-#define PLACE_MIGRATE() PLACE(".wswap2")
+#define PLACE_SHIELDALL() PLACE(".wswap2")
 #define PLACE_SHIELD() PLACE(".wD")
 #define PLACE_START() PLACE(".wR1")
 #define PLACE_BIND() PLACE(".wR2")
@@ -175,7 +176,6 @@ static int s_raw;     /* physical D-pad bits (12..15) of the previous frame */
 /* NOTE on the order of the functions: gcc believes it is in the text section when the first function of the file
  * starts and writes `.text` itself, which would override a PLACE() before it. So the first function must be one
  * that belongs in the tail of BATTLE.PRG (migrate). */
-static void shieldMigrate(void);
 static vs_main_inventoryWeapon* inSlot(int n);
 
 /* Every weapon must have its own slot. Version 2 marked any number of favourites
@@ -198,7 +198,6 @@ static void migrate(void)
             w[i].gems[3] = k;
         }
     }
-    shieldMigrate();
 }
 
 /* Per-slot shields ("exact loadout"). The shield of a weapon slot is recorded in the 4th gem byte of the
@@ -235,28 +234,22 @@ static void shieldBind(int n, int with)
 }
 UNPLACE();
 
-/* v3 slots know no shields. As long as no shield has any slot bit, the equipped shield is given the bits of
- * all slotted one-handed weapons, so that they keep the shield they had (no equipped shield: nothing to give).
- * migrate() has made the slots valid (0..8) before. */
-PLACE_MIGRATE();
-static void shieldMigrate(void)
+/* Start in the weapon overlay: the equipped shield becomes the shield of every occupied one-handed slot (its bits
+ * are set on the equipped shield and cleared on all others); without an equipped shield those slots end up
+ * without a shield. Two-handed and empty slots stay as they are. Nothing else ever writes shield bits besides
+ * assign(). */
+PLACE_SHIELDALL();
+static void shieldAll(void)
 {
-    vs_main_inventoryShield* s = vs_main_inventory.shields;
     vs_main_inventoryWeapon* w = vs_main_inventory.weapons;
-    int any = 0;
     int i;
 
     for (i = 0; i < 8; ++i) {
-        any |= SH_SLOTS(&s[i]);
-    }
-    if (any) {
-        return;
-    }
-    for (i = 0; i < 8; ++i) {
-        if (!twoHanded(&w[i])) { /* (an empty record has slot 0: shieldBind does nothing) */
+        if (w[i].blade && !twoHanded(&w[i])) {
             shieldBind(w[i].gems[3], 1);
         }
     }
+    vs_main_playSfxDefault(0x7E, 0x18); /* the "confirm" of the workshop (not the assign / clear sounds) */
 }
 UNPLACE();
 
@@ -467,7 +460,7 @@ UNPLACE();
 #if !WSWAP_CLASSIC
 /* L1 and R1 exchanged (bits 2 and 3 of the button words): the camera of the field reads them from
  * vs_main_buttonsPreviousState, physical L1 turns it like the game's R1 and the other way round */
-PLACE(".wB");
+PLACE(".wE");
 static int swapLR(int v)
 {
     return (v & ~(PADL1 | PADR1)) | ((v & PADL1) << 1) | ((v & PADR1) >> 1);
@@ -520,7 +513,7 @@ UNPLACE();
 PLACE_T(".wH");
 static void drawHint(void)
 {
-    drawSmall(wl_hint + s_assign * 16, 160 | (142 << 16), 30, 3 | (wl_pal[4 + s_assign] << 3));
+    drawSmall(wl_hint + s_assign * 32, 160 | (142 << 16), 30, 3 | (wl_pal[4 + s_assign] << 3));
 }
 UNPLACE();
 
@@ -568,8 +561,12 @@ static void slotMode(int rawNew)
     int k;
     vs_main_inventoryWeapon* t;
 
-    vs_main_buttonsPressed.all &= ~(0xF0F0 | PADselect);
-    vs_main_buttonRepeat &= ~(0xF0F0 | PADselect);
+    vs_main_buttonsPressed.all &= ~(0xF0F0 | PADselect | PADstart);
+    vs_main_buttonRepeat &= ~(0xF0F0 | PADselect | PADstart);
+    if (pressed & PADstart) { /* one press = one write; the press is swallowed (no first person view) */
+        shieldAll();
+        return;
+    }
     if (pressed & PADselect) {
         s_assign ^= 1;
         if (s_assign) {

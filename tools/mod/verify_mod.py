@@ -580,14 +580,16 @@ dw = [(o, struct.unpack_from('<I', m7p, o)[0], struct.unpack_from('<I', m7n, o)[
 dorig = sum(1 for o in range(0, MENU7_SIZE, 4) if orig7[o:o + 4] != m7n[o:o + 4])
 dprev = sum(1 for o in range(0, MENU7_SIZE, 4) if orig7[o:o + 4] != m7p[o:o + 4])
 p('   MENU7.PRG words differing from the original game file: previous release %d, this release %d (= previous + the 2 below)' % (dprev, dorig))
-if dorig != dprev + 2:
-    fail('MENU7.PRG: this release must differ from the original in exactly 2 more words than the previous one')
+if dorig != dprev + len(dw) or len(dw) not in (0, 2):
+    fail('MENU7.PRG: this release must differ from the previous one in exactly the 2 loop-bound words (v3 -> v3.1) or not at all (v3.1 -> rc2)')
 for o, a, b in dw:
     p('   MENU7.PRG +0x%05X: %08X -> %08X   (opcode %02x, rt r%d, rs r%d, immediate %d -> %d)' % (o, a, b, a >> 26, (a >> 16) & 31, (a >> 21) & 31, a & 0xFFFF, b & 0xFFFF))
-if [o for o, _, _ in dw] != list(MENU7_WORDS) or any((a >> 26) != 0x0A or (a & ~0xFFFF) != (b & ~0xFFFF) or (a & 0xFFFF) != 4 or (b & 0xFFFF) != 3 for _, a, b in dw):
+if dw and [o for o, _, _ in dw] != list(MENU7_WORDS) or any((a >> 26) != 0x0A or (a & ~0xFFFF) != (b & ~0xFFFF) or (a & 0xFFFF) != 4 or (b & 0xFFFF) != 3 for _, a, b in dw):
     fail('MENU7.PRG: expected exactly the two loop-bound immediates 4 -> 3')
-else:
+elif dw:
     p('   MENU7.PRG vs the previous release: exactly 2 words differ (instruction immediates 4 -> 3 only, same size 34990, same 18 sectors)')
+else:
+    p('   MENU7.PRG vs the previous release: identical')
 newf = bytes(newf)
 prevf = bytes(prevf)
 if newf != new_prg:

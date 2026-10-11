@@ -270,6 +270,7 @@ class Machine:
         reg('vs_battle_playMenuSelectSfx', lambda m: m.log.append(('sfx', 'select')))
         reg('vs_battle_playMenuLeaveSfx', lambda m: m.log.append(('sfx', 'leave')))
         reg('vs_battle_playInvalidSfx', lambda m: m.log.append(('sfx', 'invalid')))
+        reg('vs_main_playSfxDefault', lambda m: m.log.append(('sfxdef', m.r[4], m.r[5])))
         reg('func_800B64A8', lambda m: m.log.append(('stand', m.r[4], m.r[5], m.r[6])))
 
         def exit6(m):
@@ -1260,7 +1261,7 @@ def test_fuzz(seed=1, frames=12000):
             if closed and was_mode == 1 and (hw & R2) and (edges & SELECT):
                 keep &= ~SELECT
             if closed and was_mode == 6 and (hw & (L2 | R2)) == (L2 | R2):
-                keep &= ~(SEL_SHORTCUT_BITS | SELECT)
+                keep &= ~(SEL_SHORTCUT_BITS | SELECT | START)
             if not loading or not closed:
                 check(pressed & keep == edges & keep, 'fuzz (classic): pressed %x vs the driver %x' % (pressed & keep, edges & keep))
                 check(m.rd(STATE) & keep == st & keep and m.rd(PREV) & keep == st & keep,
@@ -1318,7 +1319,7 @@ def enc_raw(text):
     return bytes(out) + b'\xE7'
 
 
-HINT, HINT_ASSIGN = enc_raw('SELECT: ASSIGN'), enc_raw('ASSIGN: PRESS A SLOT')
+HINT, HINT_ASSIGN = enc_raw('SELECT: ASSIGN  START: SHIELD'), enc_raw('ASSIGN: PRESS A SLOT')
 
 
 def enc(text, space=(0xFA, 6)):
@@ -2601,48 +2602,78 @@ def test_shield_swap():
           'm: call sequence with a shield: %s' % names)
 
 
-def test_shield_migration():
-    def machine(shields, slots, cats=None, cur=0):
-        m = Machine()
-        m.setup_weapons(set(), cur, blade_cat=cats or {}, slots=slots)
-        for i, kw in shields.items():
-            set_shield(m, i, **kw)
-        return m
-    # the equipped shield gets the bits of all one-handed slots, none for two-handed ones
-    m = machine({1: dict(eq=1)}, {0: 1, 1: 2, 2: 3, 4: 5}, cats={2: 3})
-    m.frame(0)
-    check(masks(m)[1] == 0b10011, 'migration: slots 1, 2, 5 (3 is two-handed): %s' % bin(masks(m)[1]))
-    for _ in range(5):
+def test_shield_start():
+    """Start in the weapon overlay: the equipped shield goes into every occupied one-handed slot"""
+    SFX = ('sfxdef', 0x7E, 0x18)
+    # a) shield 3 on; slots 1, 2, 5 one-handed, slot 3 two-handed, slot 4 and 6..8 have no weapon
+    m = swap_machine({0: 1, 1: 2, 2: 3, 4: 5}, {2: 3}, 0, {3: dict(eq=1), 5: dict(mask=0x0F), 6: dict(mask=0x80)}, sentinel=False)
+    m.log.clear()
+    log, pressed = press(m, START)
+    check(masks(m)[3] == 0x13 and masks(m)[5] == 0x0C and masks(m)[6] == 0x80,
+          'Start: bits of slots 1,2,5 on the equipped shield, cleared elsewhere; 2H slot 3 and empty slots untouched: %s' % [hex(x) for x in masks(m)])
+    check(log.count(SFX) == 1 and not any(e[0] == 'sfx' for e in log), 'Start: its own confirm sound only: %s' % log)
+    check(pressed & START == 0, 'Start swallowed (pressed word)')
+    check(m.rd(REPEAT) & START == 0 and m.rd(MODE) == 6 and m.equipped() == [0] and slots_of(m)[:5] == [1, 2, 3, 0, 5],
+          'Start: no other effect (mode 6, weapon, slots unchanged)')
+    # b) no shield on: those slots end up without a shield
+    m = swap_machine({0: 1, 1: 2, 2: 3, 4: 5}, {2: 3}, 0, {3: dict(mask=0x1F), 4: dict(mask=0xFF)}, sentinel=False)
+    press(m, START)
+    check(masks(m)[3] == 0x0C and masks(m)[4] == 0xEC, 'Start without a shield: one-handed slot bits cleared everywhere: %s' % [hex(x) for x in masks(m)])
+    # c) one press = one write, also when held (auto-repeat is swallowed too)
+    m = swap_machine({0: 1, 1: 2}, {}, 0, {3: dict(eq=1)}, sentinel=False)
+    m.log.clear()
+    for _ in range(40):
+        m.frame(L2 | R2 | START)
+    check(m.log.count(SFX) == 1 and masks(m)[3] == 0x03, 'held Start: one write (%d sounds)' % m.log.count(SFX))
+    m.frame(L2 | R2)
+    m.wr(sh_addr(3) + SH_MASK_O, 0, 1)
+    m.frame(L2 | R2 | START)
+    check(m.log.count(SFX) == 2 and masks(m)[3] == 0x03, 'a second press writes again')
+    # d) in assign mode it works and does not toggle the mode
+    m = swap_machine({0: 1, 1: 2}, {}, 0, {3: dict(eq=1)}, sentinel=False)
+    m.frame(L2 | R2 | SELECT)
+    m.frame(L2 | R2)
+    check(m.rd(S_ASSIGN) == 1, 'assign mode on')
+    press(m, START)
+    check(m.rd(S_ASSIGN) == 1 and masks(m)[3] == 0x03, 'Start in assign mode: written, mode unchanged')
+    # e) not in the overlay: untouched (first person etc. stay the game's)
+    for desc, setup, hw in (('mode 1, no L2/R2', lambda mm: mm.wr(MODE, 1), 0), ('L2 only (native shortcuts)', lambda mm: None, L2), ('menu open', lambda mm: mm.wr(MENU, 0), L2 | R2)):
+        m = swap_machine({0: 1, 1: 2}, {}, 0, {3: dict(eq=1)}, sentinel=False)
+        setup(m)
+        m.log.clear()
+        m.frame(hw)
+        m.frame(hw | START)
+        check(masks(m)[3] == 0 and SFX not in m.log and m.rd(PRESSED) & START, 'Start outside the overlay (%s): untouched' % desc)
+    # f) the weapon labels show the new hint line
+    m = swap_machine({0: 1}, {}, 0, {}, sentinel=False)
+    m.wr(D_ANIM, 0, 1)
+    m.log.clear()
+    m.call(LABEL, 4)
+    want = ref_small(m, HINT, 30, 1, 160, 142, PAL[4])
+    check(m.log[-len(want):] == want, 'hint line: SELECT: ASSIGN  START: SHIELD')
+
+
+def test_no_shield_migration():
+    """v3.1 rc2: nothing writes shield bits automatically any more"""
+    m = Machine()
+    m.setup_weapons(set(), 0, slots={0: 1, 1: 2, 4: 5})
+    set_shield(m, 1, eq=1)
+    for _ in range(10):
         m.frame(0)
-    check(masks(m)[1] == 0b10011 and sum(masks(m)) == 0b10011, 'idempotent')
-    # not again once the user changed something (one bit anywhere is enough to stay out)
-    m.wr(sh_addr(1) + SH_MASK_O, 0b10, 1)
+    check(masks(m) == [0] * 8, 'equipped shield, slots, no bits: nothing is migrated (%s)' % masks(m))
+    # nor does anything in the swap / assign flow other than assign() write bits
+    m = swap_machine({0: 1, 1: 2}, {}, 0, {1: dict(eq=1)}, sentinel=False)
+    for _ in range(5):
+        m.frame(L2 | R2)
+    go(m, 2)
+    go(m, 1)
+    check(masks(m) == [0] * 8, 'swaps write no bits')
+    # v2 favourites still become distinct slots, without any shield bits
+    m = Machine()
+    m.setup_weapons(set(), 0, slots={0: 1, 2: 1, 3: 1})
+    set_shield(m, 1, eq=1)
     m.frame(0)
-    check(masks(m)[1] == 0b10, 'a loadout the user set is not completed by the migration')
-    # no shield equipped: nothing to give; a bag shield gets nothing
-    m = machine({3: dict(eq=0)}, {0: 1, 1: 2})
-    m.frame(0)
-    check(masks(m) == [0] * 8, 'no equipped shield: no bits')
-    # any bit on any shield (even a stale one) disables it
-    m = machine({1: dict(eq=1), 4: dict(mask=0x40)}, {0: 1})
-    m.frame(0)
-    check(masks(m)[1] == 0 and masks(m)[4] == 0x40, 'bits present: not migrated')
-    # empty slots / no weapons
-    m = machine({1: dict(eq=1)}, {})
-    m.frame(0)
-    check(masks(m) == [0] * 8, 'no slots: nothing')
-    # only in the field (menu closed)
-    m = machine({1: dict(eq=1)}, {0: 1})
-    m.wr(MENU, 1)
-    m.frame(0)
-    check(masks(m) == [0] * 8, 'menu open: not run')
-    m.wr(MENU, 0x3F)
-    m.frame(0)
-    check(masks(m)[1] == 1, 'menu closed: run')
-    # v2 favourites (several 1) are first made distinct by the slot migration, then the shield bits follow
-    m = machine({1: dict(eq=1)}, {0: 1, 2: 1, 3: 1})
-    m.frame(0)
-    check(slots_of(m)[:4] == [1, 0, 2, 3] and masks(m)[1] == 0b111, 'v2 favourites -> slots 1,2,3 -> bits: %s %s' % (slots_of(m), bin(masks(m)[1])))
+    check(slots_of(m)[:4] == [1, 0, 2, 3] and masks(m) == [0] * 8, 'v2 favourites: slots only')
 
 
 def test_shield_loadout():
@@ -2729,7 +2760,7 @@ def test_shield_fuzz(frames=6000):
             m.mode10_left = 0
         hw = 0
         if rnd.random() < 0.7:
-            hw = L2 | R2 | rnd.choice([0, CIR, TRI, SQR, CRS, DUP, DDOWN, DRIGHT, DLEFT, SELECT])
+            hw = L2 | R2 | rnd.choice([0, CIR, TRI, SQR, CRS, DUP, DDOWN, DRIGHT, DLEFT, SELECT, START])
         elif rnd.random() < 0.3:
             hw = R2 | rnd.choice([0, SELECT])
         m.load_frames = rnd.choice([1, 2, 5])
@@ -2775,7 +2806,8 @@ if __name__ == '__main__':
     test_wmode_transitions()
     test_shield_assign()
     test_shield_swap()
-    test_shield_migration()
+    test_shield_start()
+    test_no_shield_migration()
     test_shield_loadout()
     test_shield_fuzz()
     test_state_machine_extras()
