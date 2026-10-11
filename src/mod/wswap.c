@@ -93,11 +93,12 @@ extern void vs_battle_playInvalidSfx(void);
 #ifndef WSWAP_ZENITH
 #define WSWAP_ZENITH 1 /* the zenith branches set this to 1 */
 #endif
-/* The default variant does not fit the unreferenced code that is left on top of Zenith: there "Start in the overlay writes
- * the equipped shield into all one-handed slots" (shieldAll) is dropped (Start is still swallowed) and migrate() only clears
- * garbage (> 8) instead of also moving duplicate slot numbers to the lowest free slot (there are no v2 saves in a Zenith run;
- * assign() keeps the numbers distinct). */
-#define ZEN_LEAN (WSWAP_ZENITH && !WSWAP_CLASSIC)
+/* ZEN_LEAN 1 trims the default variant in case the unreferenced code on top of Zenith gets short (the first Zenith build
+ * needed it): "Start in the overlay writes the equipped shield into all one-handed slots" (shieldAll) is dropped (Start is
+ * still swallowed), migrate() only clears garbage (> 8) instead of also moving duplicate slot numbers to the lowest free slot,
+ * and the hint is "SELECT: ASSIGN" only. With the SLUS_010.40 ranges that pass tools/mod/check_refs_disc.py the full default
+ * variant fits. tools/mod/test_wswap.py reads this line; the classic variant never sets it. */
+#define ZEN_LEAN 0
 
 /* The classic variant is small enough to keep swapAllowed, startSwap, drawHint and the hint strings
  * in the tail of BATTLE.PRG: the unreferenced functions .wE, .wF and .wH stay untouched there. */

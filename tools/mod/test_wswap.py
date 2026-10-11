@@ -25,7 +25,8 @@ CLASSIC = bool(re.search(r'^#define WSWAP_CLASSIC 1', open(os.path.join(ROOT, 's
 # (tools/mod/wswap-zenith.ld), build/data/BATTLE/BATTLE.PRG and build/data/SLUS_010.40 are the patched files of the combined
 # image, build/mod/BATTLE.PRG.pristine is Zenith's BATTLE.PRG, build/mod/zenith_allowed.txt lists every range the mod may write
 ZENITH = bool(re.search(r'^#define WSWAP_ZENITH 1', open(os.path.join(ROOT, 'src/mod/wswap.c')).read(), re.M))
-LEAN = ZENITH and not CLASSIC   # ZEN_LEAN in src/mod/wswap.c: no Start function, migrate() clears garbage only, short hint
+# `#define ZEN_LEAN 1` in src/mod/wswap.c (default variant only): no Start function, migrate() clears garbage only, short hint
+LEAN = ZENITH and not CLASSIC and bool(re.search(r'^#define ZEN_LEAN 1', open(os.path.join(ROOT, 'src/mod/wswap.c')).read(), re.M))
 
 # ---- symbols ---------------------------------------------------------------
 SYM = {}

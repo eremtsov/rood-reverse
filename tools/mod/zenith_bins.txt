@@ -1,11 +1,11 @@
-# name start size tier note  (tools/mod/zenith_pack.py reads this; tier 0 = used by the vanilla mod, 1 = other unreferenced BATTLE.PRG functions, 2 = unreferenced SLUS_010.40 library modules)
-s_8001ECA4 8001ECA0 36 2 libspu/S_SCMV_(incl._4_bytes_of_nop_padding_in_front)
-s_8001F65C 8001F65C 104 2 libsn/SNDTORS
-s_80020384 80020378 228 2 libcd/CDROM+libcd/SYS_(incl._12_bytes_of_nop_padding_in_front)
-s_80022134 8002212C 232 2 libcd/C_002+libcd/C_003_(incl._8_bytes_of_nop_padding_in_front)
-s_80022304 800222F8 332 2 libcd/C_005+libcd/C_007_(incl._12_bytes_of_nop_padding_in_front)
-s_80022484 80022478 236 2 libcd/C_009+libcd/C_010_(incl._12_bytes_of_nop_padding_in_front)
-s_80026164 80026160 260 2 libds/DSREAD2_(incl._4_bytes_of_nop_padding_in_front)
+# name start size tier note  (tools/mod/zenith_pack.py reads this; tier 0 = used by the vanilla mod, 1 = other unreferenced BATTLE.PRG functions, 2 = unreferenced SLUS_010.40 library functions)
+# Every range must pass tools/mod/check_refs_disc.py (all executables of the disc, vanilla and Zenith; build_zenith.sh runs it).
+# The first Zenith build had six more SLUS_010.40 ranges (libcd CDROM/SYS/C_002/C_003/C_005/C_007/C_009/C_010, libds DSREAD2,
+# libspu S_SCMV): TITLE.PRG (the FMV player) calls them, they are gone.
+s_8001F65C 8001F65C 104 2 libsn/SNDTORS:__do_global_dtors
+s_80020560 80020560 956 2 libcd/SYS_2:CdControl+CdControlF+CdControlB
+s_80025C54 80025C4C 1272 2 libds/DSREAD:DsRead..func_800260A8_(8_bytes_of_nop_padding_in_front;_not_its_last_function_DsReadMode)
+s_8002AE88 8002AE88 812 2 libgpu/SYS:StoreImage2+MoveImage2+DrawOTag2
 b_80072B9C 80072B9C 12 1 func_80072B9C
 e_800733F8 800733F8 140 0 func_800733F8
 b_8007B378 8007B378 152 1 func_8007B378+func_8007B3D0+func_8007B3F0 (check_dead:only_the_source-name_test_trips:prototype+comment_'unused')

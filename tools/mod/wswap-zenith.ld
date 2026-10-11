@@ -8,48 +8,48 @@ SECTIONS
     /* s_8001F65C   8001F65C..8001F6C4  104 of  104 bytes (tier 2): .z_swapAllowed2 */
     . = 0x8001F65C;
     .zb_8001F65C : SUBALIGN(4) { *(.z_swapAllowed2) }
-    /* s_80020384   80020378..8002045C  228 of  228 bytes (tier 2): .z_shieldAll, .z_wswap_entry */
-    . = 0x80020378;
-    .zb_80020378 : SUBALIGN(4) { *(.z_shieldAll) *(.z_wswap_entry) }
-    /* s_80022134   8002212C..80022214  232 of  232 bytes (tier 2): .z_shieldSwap, .z_pal */
-    . = 0x8002212C;
-    .zb_8002212C : SUBALIGN(4) { *(.z_shieldSwap) *(.z_pal) }
-    /* s_80022484   80022478..80022564  236 of  236 bytes (tier 2): .z_slotMode */
-    . = 0x80022478;
-    .zb_80022478 : SUBALIGN(4) { *(.z_slotMode) }
-    /* s_80026164   80026160..80026264  252 of  260 bytes (tier 2): .z_assign */
-    . = 0x80026160;
-    .zb_80026160 : SUBALIGN(4) { *(.z_assign) }
-    /* e_800733F8   800733F8..80073484  140 of  140 bytes (tier 0): .z_swapAllowed, .z_swapAllowed3 */
+    /* s_8002AE88   8002AE88..8002B1B4  788 of  812 bytes (tier 2): .z_entryLoad, .z_wslot_label */
+    . = 0x8002AE88;
+    .zb_8002AE88 : SUBALIGN(4) { *(.z_entryLoad) *(.z_wslot_label) }
+    /* e_800733F8   800733F8..80073484  124 of  140 bytes (tier 0): .z_wswap_entry, .z_pal */
     . = 0x800733F8;
-    .zb_800733F8 : SUBALIGN(4) { *(.z_swapAllowed) *(.z_swapAllowed3) }
+    .zb_800733F8 : SUBALIGN(4) { *(.z_wswap_entry) *(.z_pal) }
     /* b_8007B378   8007B378..8007B410  152 of  152 bytes (tier 1): .z_slotPress */
     . = 0x8007B378;
     .zb_8007B378 : SUBALIGN(4) { *(.z_slotPress) }
+    /* b_8007DF00   8007DF00..8007DF40   64 of   64 bytes (tier 1): .z_twoHanded */
+    . = 0x8007DF00;
+    .zb_8007DF00 : SUBALIGN(4) { *(.z_twoHanded) }
+    /* b_80085978   80085978..800859B4   56 of   60 bytes (tier 1): .z_hint */
+    . = 0x80085978;
+    .zb_80085978 : SUBALIGN(4) { *(.z_hint) }
     /* b_800981B8   800981B8..8009820C   76 of   84 bytes (tier 1): .z_inSlot */
     . = 0x800981B8;
     .zb_800981B8 : SUBALIGN(4) { *(.z_inSlot) }
     /* e_80099854   80099854..80099960  268 of  268 bytes (tier 0): .z_entryMode */
     . = 0x80099854;
     .zb_80099854 : SUBALIGN(4) { *(.z_entryMode) }
-    /* e_80099FA8   80099FA8..8009A028  128 of  128 bytes (tier 0): .z_startSwap */
+    /* e_80099FA8   80099FA8..8009A028  124 of  128 bytes (tier 0): .z_entryMsg */
     . = 0x80099FA8;
-    .zb_80099FA8 : SUBALIGN(4) { *(.z_startSwap) }
+    .zb_80099FA8 : SUBALIGN(4) { *(.z_entryMsg) }
     /* b_8009AC24   8009AC24..8009AC84   88 of   96 bytes (tier 1): .z_entryPad */
     . = 0x8009AC24;
     .zb_8009AC24 : SUBALIGN(4) { *(.z_entryPad) }
     /* e_8009BD90   8009BD90..8009BE5C  204 of  204 bytes (tier 0): .text, .z_msgOff */
     . = 0x8009BD90;
     .zb_8009BD90 : SUBALIGN(4) { *(.text) *(.z_msgOff) }
-    /* b_8009FC20   8009FC20..8009FC60   64 of   64 bytes (tier 1): .z_twoHanded */
+    /* b_8009FC20   8009FC20..8009FC60   48 of   64 bytes (tier 1): .z_lab */
     . = 0x8009FC20;
-    .zb_8009FC20 : SUBALIGN(4) { *(.z_twoHanded) }
+    .zb_8009FC20 : SUBALIGN(4) { *(.z_lab) }
     /* e_800A071C   800A071C..800A0768   76 of   76 bytes (tier 0): .z_equippedSlot */
     . = 0x800A071C;
     .zb_800A071C : SUBALIGN(4) { *(.z_equippedSlot) }
-    /* e_800A0B5C   800A0B5C..800A0BE0  124 of  132 bytes (tier 0): .z_entryMsg */
+    /* b_800A07B4   800A07B4..800A07FC   72 of   72 bytes (tier 1): .z_swapAllowed */
+    . = 0x800A07B4;
+    .zb_800A07B4 : SUBALIGN(4) { *(.z_swapAllowed) }
+    /* e_800A0B5C   800A0B5C..800A0BE0  120 of  132 bytes (tier 0): .z_shieldAll */
     . = 0x800A0B5C;
-    .zb_800A0B5C : SUBALIGN(4) { *(.z_entryMsg) }
+    .zb_800A0B5C : SUBALIGN(4) { *(.z_shieldAll) }
     /* e_800A1B28   800A1B28..800A1B9C  116 of  116 bytes (tier 0): .z_modeFlags */
     . = 0x800A1B28;
     .zb_800A1B28 : SUBALIGN(4) { *(.z_modeFlags) }
@@ -62,17 +62,17 @@ SECTIONS
     /* b_800ACFA0   800ACFA0..800AD008  104 of  104 bytes (tier 1): .z_shieldBind */
     . = 0x800ACFA0;
     .zb_800ACFA0 : SUBALIGN(4) { *(.z_shieldBind) }
-    /* e_800B26B8   800B26B8..800B28A8  492 of  496 bytes (tier 0): .z_entryLoad, .z_hint */
+    /* e_800B26B8   800B26B8..800B28A8  488 of  496 bytes (tier 0): .z_assign, .z_slotMode */
     . = 0x800B26B8;
-    .zb_800B26B8 : SUBALIGN(4) { *(.z_entryLoad) *(.z_hint) }
+    .zb_800B26B8 : SUBALIGN(4) { *(.z_assign) *(.z_slotMode) }
     /* b_800CEF0C   800CEF0C..800CEF38   40 of   44 bytes (tier 1): .bss */
     . = 0x800CEF0C;
     .zb_800CEF0C : SUBALIGN(4) { *(.bss*) *(COMMON) LONG(0); }
     /* e_800D155C   800D155C..800D1678  280 of  284 bytes (tier 0): .z_drawSmall */
     . = 0x800D155C;
     .zb_800D155C : SUBALIGN(4) { *(.z_drawSmall) }
-    /* e_800D197C   800D197C..800D1B18  400 of  412 bytes (tier 0): .z_wslot_label, .z_lab */
+    /* e_800D197C   800D197C..800D1B18  412 of  412 bytes (tier 0): .z_shieldSwap, .z_startSwap, .z_swapAllowed3 */
     . = 0x800D197C;
-    .zb_800D197C : SUBALIGN(4) { *(.z_wslot_label) *(.z_lab) }
+    .zb_800D197C : SUBALIGN(4) { *(.z_shieldSwap) *(.z_startSwap) *(.z_swapAllowed3) }
     /DISCARD/ : { *(.reginfo) *(.MIPS.abiflags) *(.pdr) *(.gnu.attributes) *(.comment) *(.mdebug*) *(.data) }
 }
