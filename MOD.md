@@ -9,25 +9,30 @@ upstream.
 
 | Variant | In short | Branch | Patch |
 |---|---|---|---|
-| **Default** | Western confirm/cancel, mirrored field buttons, reworked camera and first-person controls, weapon slots | `qol-mod` | `Vagrant Story (USA) - QoL mod v3.xdelta` |
-| **Classic buttons** | Every original control kept; only the weapon slots are added | `qol-mod-classic` | `Vagrant Story (USA) - QoL mod v3 (classic buttons).xdelta` |
+| **Default** | Western confirm/cancel, mirrored field buttons, reworked camera and first-person controls, weapon slots | `qol-mod` | `Vagrant Story (USA) - QoL mod v3.1.xdelta` |
+| **Classic buttons** | Every original control kept; only the weapon slots are added | `qol-mod-classic` | `Vagrant Story (USA) - QoL mod v3.1 (classic buttons).xdelta` |
 
 ## Weapon slots (both variants)
 
-Weapon switching works like the L2 shortcut menu. Each of the 8 slots holds one
-weapon.
+Weapon switching works like the L2 shortcut menu. Each of the 8 slots holds a weapon
+and, optionally, a shield.
 
 | Input | What it does |
 |---|---|
 | **Hold L2 + R2** | Opens the L2 shortcut overlay with your weapons in the 8 slots, shown by name |
-| ...then **○ △ □ ×** or **↑ ↓ → ←** | Equips the weapon in that slot |
+| ...then **○ △ □ ×** or **↑ ↓ → ←** | Equips the weapon (and shield) in that slot |
 | ...then **Select** | Toggles assign mode (see below) |
-| **R2 + Select** | Puts the equipped weapon in the first free slot, or takes it out of its slot |
+| ...then **Start** | Writes the equipped shield into every occupied one-handed slot; with no shield equipped, those slots lose their shield |
+| **R2 + Select** | Puts the equipped weapon (and shield) in the first free slot, or takes it out of its slot |
 
 - **Equipping:** with the weapon drawn, Ashley sheathes the old weapon and draws the
   new one. The new weapon's name appears in the information bar for about 2.5 s.
+- **Shields:** a slot is an exact loadout. Swapping to a slot equips its shield, or
+  takes the shield off if the slot has none. A two-handed weapon always takes it off.
+  If the recorded shield is no longer in your bag, the slot counts as having no shield.
 - **Assign mode:** shown by orange labels and an on-screen prompt. The next slot
-  button puts the equipped weapon in that slot. If the weapon was in another slot, it
+  button puts the equipped weapon in that slot, together with the equipped shield if
+  the weapon is one-handed. If the weapon was in another slot, it
   moves there; pressing its own slot clears it. Assign mode then turns off.
 - **D-pad slots** react only to the real D-pad, so walking with the left stick while
   holding L2 + R2 never triggers them.
@@ -36,7 +41,13 @@ weapon.
   loading.
 - **Saved with your game:** slots are stored in an unused byte of each weapon (the 4th
   gem slot, which no grip uses). Saves from the unmodded game work as they are, and
-  favorites from v2 move into slots 1, 2, 3, ...
+  favorites from v2 move into slots 1, 2, 3, ... Shields are stored the same way: an
+  unused byte of each shield records which slots it belongs to.
+- **Coming from v3:** your slots keep their weapons but have no shields yet. Open
+  L2 + R2 with your shield on and press **Start** once.
+- **Container:** saving the Container's contents no longer scrambles these bytes. A
+  two-constant fix in its copy routine does this, and it doesn't affect the unmodded
+  game's data. Selling a shield or combining it in a workshop still drops its slots.
 - Holding **L2 alone** still opens the normal shortcuts.
 
 ## Default variant: all control changes
@@ -87,8 +98,8 @@ You need your own dump of **Vagrant Story (USA)** as a single-track `.bin` + `.c
 | File | SHA-1 |
 |---|---|
 | Original `.bin` | `38c63db6c49a06b91d87cd5a4e31b1ec68fe212c` |
-| Patched `.bin`, default (`QoL mod v3.xdelta`) | `1122e397c604a63e45ae1f6e81e3b1b5195738c2` |
-| Patched `.bin`, classic buttons (`QoL mod v3 (classic buttons).xdelta`) | `8efcf9f381337192f2d2f8416a0a7ac3fc014dfa` |
+| Patched `.bin`, default (`QoL mod v3.1.xdelta`) | `6a10baa9189def6d244cc57912460f0f41988e65` |
+| Patched `.bin`, classic buttons (`QoL mod v3.1 (classic buttons).xdelta`) | `7c046e1b97a3b240c53fbd6e9eb2b7bd80ccf5b4` |
 
 1. Get the patch for your variant from the [Releases](../../releases) page.
 2. Apply it to your `.bin` with any xdelta tool (xdelta UI, Delta Patcher, or
