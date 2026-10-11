@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# Build the "classic buttons" mod disc image: weapon slots (L2+R2 overlay, L1/R1 slot cycling)
-# with sheathe/draw animations and the weapon-name box, camera on the right stick, directly on
-# the unmodified decompilation (the original Cross/Circle layout; the "western confirm/cancel"
-# variant is the qol-mod branch).
+# Build the personal mod disc image: weapon slots (L2+R2 overlay, L1/R1 slot cycling) with
+# sheathe/draw animations and the weapon-name box, camera on the right stick, on top of the
+# confirm/cancel-swap commits.
 #
 #   tools/mod/build_mod.sh
 #
@@ -34,7 +33,16 @@ PRG_RAM=$((0x80068800))
 IMG_SIZE=750643152
 PRG=$B/data/BATTLE/BATTLE.PRG
 # output section : RAM address : size of the dead range
-DEAD="wswap2:800B26B8:496 wA:800D197C:412 wB:800AA108:392 wC:800D155C:284 wD:80099854:268 wE:8009BD90:204 wF:800733F8:140 wH:8007FF8C:116"
+DEAD="wswap2:800B26B8:496 wA:800D197C:412 wB:800AA108:392 wC:800D155C:284 wD:80099854:268"
+# The classic variant (src/mod/wswap.c: #define WSWAP_CLASSIC 1) is smaller: swapAllowed, startSwap and drawHint stay
+# in the tail (func_8009BD90, func_800733F8, func_8007FF8C are not touched), and it has no first-person look hook.
+# The default variant uses those three and additionally func_800D9910.
+if grep -q '^#define WSWAP_CLASSIC 1' src/mod/wswap.c; then
+    CLASSIC=1
+else
+    CLASSIC=0
+    DEAD="$DEAD wE:8009BD90:204 wF:800733F8:140 wH:8007FF8C:116 wZ:800D9910:604"
+fi
 
 die() { echo "build_mod: $*" >&2; exit 1; }
 
@@ -90,11 +98,17 @@ label=$(${CROSS}nm "$M/wswap.elf" | awk '$3=="wslot_label"{print $1}')
 [ -n "$entry" ] && [ -n "$label" ] || die "wswap_entry / wslot_label not found"
 padstate=$(awk '$1=="vs_main_processPadState"{gsub(/;/,"",$3); print $3}' "$M/syms.ld")
 labelorig=$(awk '$1=="func_800C9EB8"{gsub(/;/,"",$3); print $3}' "$M/syms.ld")
+fp=0; fporig=$(awk '$1=="func_8006EC7C"{gsub(/;/,"",$3); print $3}' "$M/syms.ld" tools/mod/extra_syms.ld)
+if [ "$CLASSIC" = 0 ]; then
+    fp=$(${CROSS}nm "$M/wswap.elf" | awk '$3=="wfp_look"{print $1}')
+    [ -n "$fp" ] || die "wfp_look not found"
+fi
 python3 -I - "$PRG" "$M" "$entry" "$label" "$padstate" "$labelorig" \
-    "$PRG_PLAIN_SIZE" "$PRG_DISC_SIZE" "$PRG_RAM" "$DEAD" data/BATTLE/BATTLE.PRG <<'PYEOF'
+    "$PRG_PLAIN_SIZE" "$PRG_DISC_SIZE" "$PRG_RAM" "$DEAD" data/BATTLE/BATTLE.PRG "$fp" "$fporig" <<'PYEOF'
 import struct, sys
-prg, mdir, entry, label, padstate, labelorig, plain, disc, base, dead, orig = sys.argv[1:]
+prg, mdir, entry, label, padstate, labelorig, plain, disc, base, dead, orig, fp, fporig = sys.argv[1:]
 entry, label, padstate, labelorig = int(entry, 16), int(label, 16), int(padstate, 16), int(labelorig, 16)
+fp, fporig = int(fp, 16), int(fporig, 16)
 plain, disc, base = int(plain), int(disc), int(base)
 data = bytearray(open(prg, 'rb').read())
 assert len(data) == plain, "BATTLE.PRG size"
@@ -104,6 +118,8 @@ jal = lambda t: 0x0C000000 | ((t >> 2) & 0x03FFFFFF)
 hooks = [(0x8007991C, padstate, entry),     # vs_battle_exec: jal vs_main_processPadState
          (0x800CA0A4, labelorig, label),    # func_800C9FE8: jal func_800C9EB8 (D-pad group)
          (0x800CA1AC, labelorig, label)]    # func_800C9FE8: jal func_800C9EB8 (button group)
+if fp:                                      # default variant: right stick looks around in first person
+    hooks.append((0x8007A10C, fporig, fp))  # vs_battle_exec: jal func_8006EC7C
 for ram, old_t, new_t in hooks:
     off = ram - base
     old = struct.unpack_from('<I', data, off)[0]
