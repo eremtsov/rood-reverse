@@ -41,6 +41,15 @@
  * (The first version used 1 = "favourite" on any number of weapons; migrate() gives
  * those weapons distinct slots.)
  *
+ * Shield of a slot (v3.1, "exact loadout"): vs_main_inventory.shields[i].gems[3] (unused byte) is a bit mask,
+ * bit N set = this shield belongs to slot N+1 (one shield per slot at most, one shield may serve several slots).
+ * Assigning a slot (assign mode, R2+Select) records the equipped shield for it (none for a two-handed weapon or
+ * without a shield on); clearing a slot clears its bit. A swap makes the shield match the slot: the slot's shield
+ * is put on (nothing to do if it already is), a slot without a (still existing) shield takes the shield off, a
+ * two-handed weapon takes it off. The steps are those of the equip menus (flags, vs_battle_equipShield, model
+ * slot, model load), inside the same state machine. shieldMigrate() gives the equipped shield the bits of all
+ * one-handed slots as long as no shield has any bit, so that v3 slots keep the shield.
+ *
  * The two `jal func_800C9EB8` in the overlay drawing function func_800C9FE8 are
  * redirected to wslot_label, which returns the original answer unless s_wmode is set.
  *
@@ -131,18 +140,20 @@ __asm__(".section " SEC_WD3 ",\"a\",@progbits\n"
  * unreferenced functions (see tools/mod/wswap.ld) */
 #define PLACE(sec) __asm__(".section " sec ",\"ax\",@progbits")
 #define UNPLACE() __asm__(".text")
-/* Which unreferenced function range holds what (tools/mod/wswap.ld); the classic variant uses fewer. */
-#if WSWAP_CLASSIC
-#define PLACE_BEGIN() PLACE(".wswap2")   /* beginSwap, inSlot */
-#define PLACE_INSLOT() PLACE(".wswap2")
-#define PLACE_LABEL() PLACE(".wA")       /* wslot_label */
-#define PLACE_START() UNPLACE()          /* startSwap: tail */
-#else
-#define PLACE_LABEL() PLACE(".wswap2")   /* wslot_label, inSlot */
-#define PLACE_INSLOT() PLACE(".wswap2")
-#define PLACE_BEGIN() PLACE(".wA")       /* beginSwap */
-#define PLACE_START() UNPLACE()          /* startSwap: tail */
-#endif
+/* Which unreferenced function range holds what (tools/mod/wswap.ld; sizes in bytes). Both variants place the
+ * v3.1 code the same way (the default one also has the camera/look code in .wswap2/.wB/.wE/.wF/.wH):
+ *   .wswap2 wslot_label, shieldMigrate (swapLR is in .wB)   .wA beginSwap     .wD shieldSwap + the label table
+ *   .wR1 startSwap   .wR2 shieldBind   .wX1 inSlot   .wX2 equippedSlot   .wX3 twoHanded
+ * The tail of BATTLE.PRG keeps wswap_entry, migrate, assign, the state (default: also swapLR in .wB). */
+#define PLACE_BEGIN() PLACE(".wA")
+#define PLACE_LABEL() PLACE(".wswap2")
+#define PLACE_MIGRATE() PLACE(".wswap2")
+#define PLACE_SHIELD() PLACE(".wD")
+#define PLACE_START() PLACE(".wR1")
+#define PLACE_BIND() PLACE(".wR2")
+#define PLACE_INSLOT() PLACE(".wX1")
+#define PLACE_EQSLOT() PLACE(".wX2")
+#define PLACE_TWOH() PLACE(".wX3")
 
 /* mod state, lives in the blob's own zero-initialised data */
 #if !WSWAP_CLASSIC
@@ -161,19 +172,126 @@ static int s_wmode;   /* 1: the L2 overlay shows weapons instead of shortcuts */
 static int s_assign;  /* 1: the next slot button assigns the equipped weapon */
 static int s_raw;     /* physical D-pad bits (12..15) of the previous frame */
 
-/* index of the equipped weapon slot, or -1 */
-static int equippedSlot(void)
+/* NOTE on the order of the functions: gcc believes it is in the text section when the first function of the file
+ * starts and writes `.text` itself, which would override a PLACE() before it. So the first function must be one
+ * that belongs in the tail of BATTLE.PRG (migrate). */
+static void shieldMigrate(void);
+static vs_main_inventoryWeapon* inSlot(int n);
+
+/* Every weapon must have its own slot. Version 2 marked any number of favourites
+ * with 1: the first keeps slot 1, the others get the lowest free slots in inventory
+ * order. Values above 8 are garbage. Idempotent, runs every field frame. */
+static void migrate(void)
 {
     vs_main_inventoryWeapon* w = vs_main_inventory.weapons;
     int i;
-    int cur = -1;
+    int g;
+    int k;
 
     for (i = 0; i < 8; ++i) {
-        if (w[i].isEquipped && w[i].blade) {
-            cur = i;
+        g = w[i].gems[3];
+        if (g > 8) {
+            w[i].gems[3] = 0;
+        } else if (g && w[i].blade && (inSlot(g) != &w[i])) {
+            /* an earlier weapon holds this slot */
+            for (k = 1; inSlot(k); ++k) { }
+            w[i].gems[3] = k;
         }
     }
-    return cur;
+    shieldMigrate();
+}
+
+/* Per-slot shields ("exact loadout"). The shield of a weapon slot is recorded in the 4th gem byte of the
+ * shield record (vs_main_inventoryShield.gems[3]) as a bit mask: bit N set = this shield belongs to slot N+1.
+ * A shield has at most 3 gem slots: every loop of the game stops at 3 or at base.gemSlots, the UI structures
+ * have gems[3], so vanilla saves hold 0 there. MENU7.PRG's container save remap used to loop over 4 bytes
+ * (edited to 3, see the docs). At most one shield per slot, but a shield may serve several slots. */
+#define SH_SLOTS(s) ((s)->gems[3])
+#define SLOT_BIT(n) ((1 << (n)) >> 1) /* slot 1..8 -> bit 0..7, 0 -> 0 */
+
+/* two-handed categories (vs_mainMenu_weaponHands) */
+PLACE_TWOH();
+static int twoHanded(vs_main_inventoryWeapon* w)
+{
+    return (0x1D4 >> (vs_main_inventory.blades[w->blade - 1].category - 1)) & 1;
+}
+UNPLACE();
+
+/* Slot n has the equipped shield (with != 0) or no shield: the bit is set on the equipped shield and
+ * cleared on all others. n == 0 does nothing. */
+PLACE_BIND();
+static void shieldBind(int n, int with)
+{
+    vs_main_inventoryShield* s = vs_main_inventory.shields;
+    int i;
+
+    for (i = 0; i < 8; ++i) {
+        if (with && s[i].isEquipped) {
+            SH_SLOTS(&s[i]) |= SLOT_BIT(n);
+        } else {
+            SH_SLOTS(&s[i]) &= ~SLOT_BIT(n);
+        }
+    }
+}
+UNPLACE();
+
+/* v3 slots know no shields. As long as no shield has any slot bit, the equipped shield is given the bits of
+ * all slotted one-handed weapons, so that they keep the shield they had (no equipped shield: nothing to give).
+ * migrate() has made the slots valid (0..8) before. */
+PLACE_MIGRATE();
+static void shieldMigrate(void)
+{
+    vs_main_inventoryShield* s = vs_main_inventory.shields;
+    vs_main_inventoryWeapon* w = vs_main_inventory.weapons;
+    int any = 0;
+    int i;
+
+    for (i = 0; i < 8; ++i) {
+        any |= SH_SLOTS(&s[i]);
+    }
+    if (any) {
+        return;
+    }
+    for (i = 0; i < 8; ++i) {
+        if (!twoHanded(&w[i])) { /* (an empty record has slot 0: shieldBind does nothing) */
+            shieldBind(w[i].gems[3], 1);
+        }
+    }
+}
+UNPLACE();
+
+/* The shield side of a swap to weapon w (two: it is two-handed): the shield becomes the one of its slot, none
+ * for a two-handed weapon or a slot without a (still existing) shield. Same steps as the equip menu
+ * (vs_mainMenu_unequipShield, _equipShieldMenu): flags, stats, free the model slot. Returns the shield that
+ * was put on (beginSwap queues its model), or NULL. */
+PLACE_SHIELD();
+static vs_main_inventoryShield* shieldSwap(vs_main_inventoryWeapon* w, int two)
+{
+    vs_main_inventoryShield* s = vs_main_inventory.shields;
+    vs_main_inventoryShield* on = NULL;   /* equipped */
+    vs_main_inventoryShield* want = NULL; /* the slot's */
+    int i;
+
+    for (i = 0; i < 8; ++i) {
+        if (s[i].isEquipped) {
+            on = &s[i];
+        }
+        if (!two && (SH_SLOTS(&s[i]) & SLOT_BIT(w->gems[3])) && s[i].base.id) {
+            want = &s[i];
+        }
+    }
+    if (want == on) {
+        return NULL;
+    }
+    for (i = 0; i < 8; ++i) {
+        s[i].isEquipped = 0;
+    }
+    if (want) {
+        want->isEquipped = 1;
+    }
+    vs_battle_equipShield(want);
+    func_8009AA84(1);
+    return want;
 }
 UNPLACE();
 
@@ -184,23 +302,19 @@ static void beginSwap(vs_main_inventoryWeapon* w)
 {
     vs_main_inventoryBlade* b = &vs_main_inventory.blades[w->blade - 1];
     vs_battle_objectData* q = vs_battle_objectDataSlots;
+    vs_main_inventoryShield* sh;
     int i;
     int cat = b->category;
     int wep = b->wepId;
+    int mat = b->material;
 
     for (i = 0; i < 8; ++i) {
         vs_main_inventory.weapons[i].isEquipped = 0;
     }
     w->isEquipped = 1;
 
-    /* two-handed categories (vs_mainMenu_weaponHands) drop the shield */
-    if ((0x1D4 >> (cat - 1)) & 1) {
-        vs_battle_equipShield(NULL);
-        for (i = 0; i < 8; ++i) {
-            vs_main_inventory.shields[i].isEquipped = 0;
-        }
-        func_8009AA84(1);
-    }
+    /* two-handed categories (vs_mainMenu_weaponHands) drop the shield, a one-handed one gets it back */
+    sh = shieldSwap(w, (0x1D4 >> (cat - 1)) & 1);
 
     vs_battle_equipWeapon(w);
 
@@ -215,15 +329,24 @@ static void beginSwap(vs_main_inventoryWeapon* w)
 
     func_8009AA84(0);
 
-    if (wep) {
-        i = wep >= 96;
-        q->dataType = 3;
-        q->index = i;
-        q->modelId = wep;
-        q->unk4 = vs_battle_characterState->unk48[i];
-        q->actorId = 0;
-        q->unk11 = 240 + i;
-        q->material = b->material;
+    for (;;) { /* the weapon model, then the model of the shield that came back (index 1: wepId >= 96) */
+        if (wep) {
+            i = wep >= 96;
+            q->dataType = 3;
+            q->index = i;
+            q->modelId = wep;
+            q->unk4 = vs_battle_characterState->unk48[i];
+            q->actorId = 0;
+            q->unk11 = 240 + i;
+            q->material = mat;
+            ++q;
+        }
+        if (sh == NULL) {
+            break;
+        }
+        wep = sh->base.wepId;
+        mat = sh->base.material;
+        sh = NULL;
     }
 
     s_w = w;
@@ -281,32 +404,26 @@ static vs_main_inventoryWeapon* inSlot(int n)
 }
 UNPLACE();
 
-/* Every weapon must have its own slot. Version 2 marked any number of favourites
- * with 1: the first keeps slot 1, the others get the lowest free slots in inventory
- * order. Values above 8 are garbage. Idempotent, runs every field frame. */
-static void migrate(void)
+/* index of the equipped weapon slot, or -1 */
+PLACE_EQSLOT();
+static int equippedSlot(void)
 {
     vs_main_inventoryWeapon* w = vs_main_inventory.weapons;
     int i;
-    int g;
-    int k;
+    int cur = -1;
 
     for (i = 0; i < 8; ++i) {
-        g = w[i].gems[3];
-        if (g > 8) {
-            w[i].gems[3] = 0;
-        } else if (g && w[i].blade && (inSlot(g) != &w[i])) {
-            /* an earlier weapon holds this slot */
-            for (k = 1; inSlot(k); ++k) { }
-            w[i].gems[3] = k;
+        if (w[i].isEquipped && w[i].blade) {
+            cur = i;
         }
     }
+    return cur;
 }
+UNPLACE();
 
 /* Put the equipped weapon into slot n; the weapon sitting there loses it. If the
  * equipped weapon already is in slot n, the slot is cleared. n == 0: its own slot
  * (clear) or else the first free one. Returns 1 when something changed. */
-PLACE(".wD");
 static int assign(int n)
 {
     vs_main_inventoryWeapon* w = vs_main_inventory.weapons;
@@ -331,6 +448,7 @@ static int assign(int n)
     }
     if (e->gems[3] == n) {
         e->gems[3] = 0;
+        shieldBind(n, 0);
         vs_battle_playMenuLeaveSfx();
         return 1;
     }
@@ -338,6 +456,8 @@ static int assign(int n)
     if (o != NULL) {
         o->gems[3] = 0;
     }
+    shieldBind(e->gems[3], 0); /* the slot it leaves has no weapon any more */
+    shieldBind(n, !twoHanded(e));
     e->gems[3] = n;
     vs_battle_playMenuSelectSfx();
     return 1;
@@ -347,10 +467,12 @@ UNPLACE();
 #if !WSWAP_CLASSIC
 /* L1 and R1 exchanged (bits 2 and 3 of the button words): the camera of the field reads them from
  * vs_main_buttonsPreviousState, physical L1 turns it like the game's R1 and the other way round */
+PLACE(".wB");
 static int swapLR(int v)
 {
     return (v & ~(PADL1 | PADR1)) | ((v & PADL1) << 1) | ((v & PADR1) >> 1);
 }
+UNPLACE();
 #endif
 
 /* Text in the game's small font (the menu item font: font table 0, glyph cells in VRAM whenever the
