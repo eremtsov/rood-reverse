@@ -33,13 +33,15 @@ PRG_RAM=$((0x80068800))
 IMG_SIZE=750643152
 PRG=$B/data/BATTLE/BATTLE.PRG
 # output section : RAM address : size of the dead range
-DEAD="wswap2:800B26B8:496 wA:800D197C:412 wB:800AA108:392 wC:800D155C:284 wD:80099854:268 wE:8009BD90:204 wF:800733F8:140 wH:8007FF8C:116"
-# the classic variant (src/mod/wswap.c: #define WSWAP_CLASSIC 1) has no first-person look hook
+DEAD="wswap2:800B26B8:496 wA:800D197C:412 wB:800AA108:392 wC:800D155C:284 wD:80099854:268"
+# The classic variant (src/mod/wswap.c: #define WSWAP_CLASSIC 1) is smaller: swapAllowed, startSwap and drawHint stay
+# in the tail (func_8009BD90, func_800733F8, func_8007FF8C are not touched), and it has no first-person look hook.
+# The default variant uses those three and additionally func_800D9910.
 if grep -q '^#define WSWAP_CLASSIC 1' src/mod/wswap.c; then
     CLASSIC=1
 else
     CLASSIC=0
-    DEAD="$DEAD wZ:800D9910:604"
+    DEAD="$DEAD wE:8009BD90:204 wF:800733F8:140 wH:8007FF8C:116 wZ:800D9910:604"
 fi
 
 die() { echo "build_mod: $*" >&2; exit 1; }

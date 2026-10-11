@@ -57,9 +57,6 @@ DEAD = {
     '.wB': (0x800AA108, 392, 'func_800AA108 + func_800AA218'),
     '.wC': (0x800D155C, 284, 'func_800D155C'),
     '.wD': (0x80099854, 268, 'func_80099854 + func_80099900'),
-    '.wE': (0x8009BD90, 204, 'func_8009BD90'),
-    '.wF': (0x800733F8, 140, 'func_800733F8'),
-    '.wH': (0x8007FF8C, 116, 'func_8007FF8C'),
 }
 HOOKS = [(0x8007991C, 'vs_battle_exec: jal vs_main_processPadState', 'wswap_entry'),
          (0x800CA0A4, 'func_800C9FE8: jal func_800C9EB8 (D-pad group)', 'wslot_label'),
@@ -67,6 +64,9 @@ HOOKS = [(0x8007991C, 'vs_battle_exec: jal vs_main_processPadState', 'wswap_entr
 # edits of the decompiled C (same code size): the toolchain build already contains them, they differ from the previous image
 DECOMP_WORDS = []
 if not CLASSIC:
+    DEAD['.wE'] = (0x8009BD90, 204, 'func_8009BD90')
+    DEAD['.wF'] = (0x800733F8, 140, 'func_800733F8')
+    DEAD['.wH'] = (0x8007FF8C, 116, 'func_8007FF8C')
     DEAD['.wZ'] = (0x800D9910, 604, 'func_800D9910')
     HOOKS.append((0x8007A10C, 'vs_battle_exec: jal func_8006EC7C (first person look)', 'wfp_look'))
     # func_8006EC7C: D-pad up/down masks swapped, stick pitch term addu -> subu
@@ -344,6 +344,17 @@ if not CLASSIC:
     regions += [('decomp edit in func_8006EC7C (pitch inversion)', a, 4) for a in DECOMP_WORDS]
 regions += [('%s (%s)' % (n, sec), r, z) for sec, (r, z, n) in DEAD.items()]
 regions += [('tail of the last sector', TAIL_RAM, TAIL_LIMIT - TAIL_RAM)]
+# functions the previous release (round 1) overwrote that this variant leaves untouched: back to the original bytes
+RESTORED = []
+if CLASSIC:
+    RESTORED = [('func_8009BD90', 0x8009BD90, 204), ('func_800733F8', 0x800733F8, 140), ('func_8007FF8C', 0x8007FF8C, 116)]
+    for n, r, z in RESTORED:
+        off = r - PRG_RAM
+        if new_prg[off:off + z] != orig_disc[off:off + z]:
+            fail('%s: not the original code' % n)
+        else:
+            p('restored (round 1 patched it, now the original bytes): %s RAM %08X, %d bytes' % (n, r, z))
+    regions += [('%s (round 1 only: restored to the original)' % n, r, z) for n, r, z in RESTORED]
 
 
 def region_of(i):

@@ -1856,11 +1856,11 @@ def test_code_budget():
             ranges[-1][1] = i + 1
         else:
             ranges.append([i, i + 1])
-    allowed = [(0x800733F8, 140), (0x8007991C, 4), (0x8007FF8C, 116), (0x80099854, 268), (0x8009BD90, 204),
-               (0x800AA108, 392), (0x800B26B8, 496), (0x800CA0A4, 4), (0x800CA1AC, 4), (0x800D155C, 284),
-               (0x800D197C, 412), (0x800F5924, 0x800F6000 - 0x800F5924)]
+    allowed = [(0x8007991C, 4), (0x80099854, 268), (0x800AA108, 392), (0x800B26B8, 496), (0x800CA0A4, 4),
+               (0x800CA1AC, 4), (0x800D155C, 284), (0x800D197C, 412), (0x800F5924, 0x800F6000 - 0x800F5924)]
     if not CLASSIC:
-        allowed += [(0x8007A10C, 4), (0x800D9910, 604)]   # first-person look hook; func_800D9910 (nextSlot, wfp_look)
+        # swapAllowed + hint strings, startSwap, drawHint; the first-person look hook; func_800D9910 (nextSlot, wfp_look)
+        allowed += [(0x8009BD90, 204), (0x800733F8, 140), (0x8007FF8C, 116), (0x8007A10C, 4), (0x800D9910, 604)]
     # the first-person look call: patched in the default variant only, and it is the only call of func_8006EC7C
     jal_fp = lambda t: 0x0C000000 | ((t >> 2) & 0x3FFFFFF)
     sites = [PRG_BASE + o for o in range(0, len(PRG_ORIG) - 3, 4) if struct.unpack_from('<I', PRG_ORIG, o)[0] == jal_fp(0x8006EC7C)]

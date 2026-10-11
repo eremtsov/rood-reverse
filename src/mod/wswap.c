@@ -74,6 +74,16 @@ extern void vs_battle_playInvalidSfx(void);
 #define WSWAP_CLASSIC 0 /* the classic branch sets this to 1 */
 #endif
 
+/* The classic variant is small enough to keep swapAllowed, startSwap, drawHint and the hint strings
+ * in the tail of BATTLE.PRG: the unreferenced functions .wE, .wF and .wH stay untouched there. */
+#if WSWAP_CLASSIC
+#define PLACE_T(sec) __asm__(".text")
+#define SEC_WD3 ".rodata.wl3"
+#else
+#define PLACE_T(sec) __asm__(".section " sec ",\"ax\",@progbits")
+#define SEC_WD3 ".wd3"
+#endif
+
 /* constant data (asm, see the header comment) */
 extern const u_char wl_lab[];        /* per overlay label id: x, y, bullet x, bullet y, width budget, slot */
 extern const u_char wl_slotBit[];    /* slot 0..7 -> bit number in the button words */
@@ -98,7 +108,7 @@ __asm__(".section .wd2,\"a\",@progbits\n"
         ".globl wl_pal\nwl_pal:\n.byte 4,5,6,5,7,6\n"
         ".text");
 /* game encoding: A..Z = 10..35, ':' = 0x9E, ' ' = 0x8F, terminator 0xE7 */
-__asm__(".section .wd3,\"a\",@progbits\n"
+__asm__(".section " SEC_WD3 ",\"a\",@progbits\n"
         ".globl wl_hint\nwl_hint:\n"
         ".byte 28,14,21,14,12,29,0x9E,0x8F,10,28,28,18,16,23,0xE7,0\n"
         ".byte 10,28,28,18,16,23,0x9E,0x8F,25,27,14,28,28,0x8F,10,0x8F,28,21,24,29,0xE7\n"
@@ -211,7 +221,7 @@ static void beginSwap(vs_main_inventoryWeapon* w)
 UNPLACE();
 
 /* the same safety conditions the swap has always had */
-PLACE(".wE");
+PLACE_T(".wE");
 static int swapAllowed(void)
 {
     return ((vs_battle_screenTransitionStep - 1) >= 2U)
@@ -222,7 +232,7 @@ static int swapAllowed(void)
 UNPLACE();
 
 /* sound, then sheathe first when the weapon is drawn, else swap at once */
-PLACE(".wF");
+PLACE_T(".wF");
 static void startSwap(vs_main_inventoryWeapon* t)
 {
     vs_battle_playMenuChangeSfx();
@@ -377,7 +387,7 @@ static void drawSmall(u_char const* s, int xy, int budget, int flags)
 UNPLACE();
 
 /* the line under the overlay: what Select does */
-PLACE(".wH");
+PLACE_T(".wH");
 static void drawHint(void)
 {
     drawSmall(wl_hint + s_assign * 16, 160 | (142 << 16), 320, 1 | (wl_pal[4 + s_assign] << 2));
