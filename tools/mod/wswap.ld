@@ -9,11 +9,12 @@
  *   .wswap2  func_800B26B8  496 bytes  beginSwap, inSlot
  *   .wA      func_800D197C  412 bytes  wslot_label
  *   .wB      func_800AA108+func_800AA218 (adjacent) 392 bytes  slotMode, button tables
- *   .wC      func_800D155C  284 bytes  assign, label position table
- *   .wD      func_80099854+func_80099900 (adjacent) 268 bytes  nameToAscii
+ *   .wC      func_800D155C  284 bytes  drawSmall (small-font text)
+ *   .wD      func_80099854+func_80099900 (adjacent) 268 bytes  assign, label position table
  *   .wE      func_8009BD90  204 bytes  swapAllowed, hint strings
  *   .wF      func_800733F8  140 bytes  startSwap
  *   .wH      func_8007FF8C  116 bytes  drawHint
+ *   .wZ      func_800D9910  604 bytes  nextSlot, wfp_look (default variant only)
  * Game symbols are provided by build/mod/syms.ld (generated) + extra_syms.ld. */
 ENTRY(wswap_entry)
 SECTIONS
@@ -33,11 +34,13 @@ SECTIONS
     . = 0x800AA108;
     .wB : SUBALIGN(4) { *(.wB) *(.wd2) }
     . = 0x800D155C;
-    .wC : SUBALIGN(4) { *(.wC) *(.wd1) }
+    .wC : SUBALIGN(4) { *(.wC) }
     . = 0x80099854;
-    .wD : SUBALIGN(4) { *(.wD) }
+    .wD : SUBALIGN(4) { *(.wD) *(.wd1) }
     . = 0x8009BD90;
     .wE : SUBALIGN(4) { *(.wE) *(.wd3) }
+    . = 0x800D9910;
+    .wZ : SUBALIGN(4) { *(.wZ) }
     . = 0x800733F8;
     .wF : SUBALIGN(4) { *(.wF) }
     . = 0x8007FF8C;

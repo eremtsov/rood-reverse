@@ -48,6 +48,8 @@ PRG_RAM = 0x80068800
 PRG_SIZE = 579584
 TAIL_RAM, TAIL_LIMIT = 0x800F5924, 0x800F6000
 PRG_LBA, PRG_SECTORS = 1100, 283
+MENU5_LBA, MENU5_SECTORS, MENU5_SIZE = 85075, 13, 26296   # MENU5.PRG (the map screen), changed in the default variant only
+CLASSIC = bool(re.search(r'^#define WSWAP_CLASSIC 1', open('src/mod/wswap.c').read(), re.M))
 # section : (RAM, size of the unreferenced function range, name of the function(s))
 DEAD = {
     '.wswap2': (0x800B26B8, 496, 'func_800B26B8'),
@@ -62,6 +64,13 @@ DEAD = {
 HOOKS = [(0x8007991C, 'vs_battle_exec: jal vs_main_processPadState', 'wswap_entry'),
          (0x800CA0A4, 'func_800C9FE8: jal func_800C9EB8 (D-pad group)', 'wslot_label'),
          (0x800CA1AC, 'func_800C9FE8: jal func_800C9EB8 (button group)', 'wslot_label')]
+# edits of the decompiled C (same code size): the toolchain build already contains them, they differ from the previous image
+DECOMP_WORDS = []
+if not CLASSIC:
+    DEAD['.wZ'] = (0x800D9910, 604, 'func_800D9910')
+    HOOKS.append((0x8007A10C, 'vs_battle_exec: jal func_8006EC7C (first person look)', 'wfp_look'))
+    # func_8006EC7C: D-pad up/down masks swapped, stick pitch term addu -> subu
+    DECOMP_WORDS = [0x8006EC8C, 0x8006ECD4, 0x8006EE50]
 
 prev_img = sys.argv[2]
 
@@ -330,6 +339,9 @@ def clusters(a, b, gap=16):
 
 
 regions = [('hook vs_battle_exec', 0x8007991C, 4), ('hook label call 1', 0x800CA0A4, 4), ('hook label call 2', 0x800CA1AC, 4)]
+if not CLASSIC:
+    regions += [('hook first person look', 0x8007A10C, 4)]
+    regions += [('decomp edit in func_8006EC7C (pitch inversion)', a, 4) for a in DECOMP_WORDS]
 regions += [('%s (%s)' % (n, sec), r, z) for sec, (r, z, n) in DEAD.items()]
 regions += [('tail of the last sector', TAIL_RAM, TAIL_LIMIT - TAIL_RAM)]
 
@@ -450,12 +462,18 @@ with open(img, 'rb') as fa_, open(prev_img, 'rb') as fb_:
         if x != y:
             bad.append(sec)
         sec += 1
-inside = [s for s in bad if PRG_LBA <= s < PRG_LBA + PRG_SECTORS]
-outside = [s for s in bad if not (PRG_LBA <= s < PRG_LBA + PRG_SECTORS)]
-p('sectors: %d; differing from the previous image: %d (all inside BATTLE.PRG [%d,%d): %s)'
-  % (sec, len(bad), PRG_LBA, PRG_LBA + PRG_SECTORS, 'yes' if not outside else 'NO, outside: %s' % outside[:10]))
+allowed_files = [('BATTLE.PRG', PRG_LBA, PRG_SECTORS)]
+if not CLASSIC:
+    allowed_files.append(('MENU5.PRG', MENU5_LBA, MENU5_SECTORS))
+in_allowed = lambda s: any(l <= s < l + n for _, l, n in allowed_files)
+outside = [s for s in bad if not in_allowed(s)]
+p('sectors: %d; differing from the previous image: %d; allowed files: %s; every differing sector inside them: %s'
+  % (sec, len(bad), ', '.join('%s [%d,%d)' % (f, l, l + n) for f, l, n in allowed_files),
+     'yes' if not outside else 'NO, outside: %s' % outside[:10]))
+for f, l, n in allowed_files:
+    p('   %-10s %d of %d sectors differ' % (f, sum(1 for s in bad if l <= s < l + n), n))
 if outside:
-    fail('image differs from the previous release outside BATTLE.PRG')
+    fail('image differs from the previous release outside %s' % ', '.join(f for f, _, _ in allowed_files))
 with open(img, 'rb') as fa_, open(prev_img, 'rb') as fb_:
     newf = bytearray()
     prevf = bytearray()
@@ -478,6 +496,41 @@ with open(img, 'rb') as fa_, open(prev_img, 'rb') as fb_:
       % (edc_checked, 'all valid' if not edc_bad else 'INVALID %s' % edc_bad, r0))
     if edc_bad or r0 is False:
         fail('EDC/ECC')
+if not CLASSIC:
+    # MENU5.PRG (the map screen): extracted from both images, EDC/ECC, every changed word
+    with open(img, 'rb') as fa_, open(prev_img, 'rb') as fb_:
+        m5n = bytearray()
+        m5p = bytearray()
+        bad5 = []
+        for s in range(MENU5_LBA, MENU5_LBA + MENU5_SECTORS):
+            fa_.seek(s * 2352)
+            fb_.seek(s * 2352)
+            x = fa_.read(2352)
+            y = fb_.read(2352)
+            m5n += x[24:24 + 2048]
+            m5p += y[24:24 + 2048]
+            if x != y and check_sector(x) is False:
+                bad5.append(s)
+    m5n, m5p = bytes(m5n[:MENU5_SIZE]), bytes(m5p[:MENU5_SIZE])
+    built = open('build/data/MENU/MENU5.PRG', 'rb').read()
+    if m5n != built:
+        fail('MENU5.PRG extracted from the image differs from build/data/MENU/MENU5.PRG')
+    if bad5:
+        fail('EDC/ECC of MENU5.PRG sectors: %s' % bad5)
+    if len(built) != MENU5_SIZE or len(m5p) != MENU5_SIZE:
+        fail('MENU5.PRG size')
+    p('MENU5.PRG extracted from the image (%d bytes, same size as before) == build/data/MENU/MENU5.PRG: %s; EDC/ECC of its changed sectors: %s'
+      % (len(m5n), 'ok' if m5n == built else 'NO', 'valid' if not bad5 else 'INVALID'))
+    p('(c) MENU5.PRG, previous image vs the new one: every changed word (map panning inverted; instruction immediates only)')
+    nwords = 0
+    for o in range(0, MENU5_SIZE, 4):
+        a, b = struct.unpack_from('<I', m5p, o)[0], struct.unpack_from('<I', m5n, o)[0]
+        if a != b:
+            nwords += 1
+            p('    +0x%05X: %08X -> %08X' % (o, a, b))
+    p('    %d words changed' % nwords)
+    if nwords != 8:
+        fail('MENU5.PRG: expected exactly 8 changed words, %d' % nwords)
 newf = bytes(newf)
 prevf = bytes(prevf)
 if newf != new_prg:

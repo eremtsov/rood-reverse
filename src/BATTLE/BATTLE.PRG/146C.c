@@ -3022,11 +3022,13 @@ void func_8006EC7C(void)
     int temp_a1;
     int var_a0;
 
-    if (vs_main_buttonsPreviousState & PADLup) {
+    // mod: first-person up/down inverted (the two masks are swapped, the sign of the
+    // stick term below is flipped; same code size)
+    if (vs_main_buttonsPreviousState & PADLdown) {
         vs_battle_cameraCurrentSpherical.values.pitch =
             (vs_battle_cameraCurrentSpherical.values.pitch - 32) % ONE;
     }
-    if (vs_main_buttonsPreviousState & PADLdown) {
+    if (vs_main_buttonsPreviousState & PADLup) {
         vs_battle_cameraCurrentSpherical.values.pitch =
             (vs_battle_cameraCurrentSpherical.values.pitch + 32) % ONE;
     }
@@ -3058,7 +3060,7 @@ void func_8006EC7C(void)
                 temp_a1 -= 64;
             }
             vs_battle_cameraCurrentSpherical.values.pitch =
-                (vs_battle_cameraCurrentSpherical.values.pitch + (temp_a1 / 3)) % ONE;
+                (vs_battle_cameraCurrentSpherical.values.pitch - (temp_a1 / 3)) % ONE;
         }
     }
 

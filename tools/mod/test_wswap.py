@@ -19,6 +19,8 @@ import sys
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')
 PRG_BASE = 0x80068800
+# the variant under test: src/mod/wswap.c has `#define WSWAP_CLASSIC 1` on the classic branch
+CLASSIC = bool(re.search(r'^#define WSWAP_CLASSIC 1', open(os.path.join(ROOT, 'src/mod/wswap.c')).read(), re.M))
 
 # ---- symbols ---------------------------------------------------------------
 SYM = {}
@@ -61,7 +63,12 @@ D_ANIM = 0x800EBCE8
 L2, R2, L1, R1 = 1, 2, 4, 8
 TRI, CIR, CRS, SQR = 0x10, 0x20, 0x40, 0x80
 SELECT, START, PADJ = 0x100, 0x800, 0x400
+SLOT_BTN_T = [0x20, 0x10, 0x80, 0x40, 1 << 12, 1 << 14, 1 << 13, 1 << 15]   # slot 1..8: Circle Triangle Square Cross Up Down Right Left
 
+SCRATCH_UNK8 = 0x801F4000   # vs_scratch.unk8 in the model
+PORTINFO = 0x80050190       # _portInfo[0]: mode (u8), rStickX (+3) / rStickY (+4) = physical LEFT stick
+CAM = 0x800F19D0            # vs_battle_cameraCurrentSpherical: yaw (+0), pitch (+4)
+CHAR_WIDTHS = 0x800EB810    # vs_battle_characterWidths (font table 0 first)
 ACTOR = 0x80120000   # emulated actor-0 structure
 CHSTATE = 0x80130000  # vs_battle_characterState
 ACT2 = 0x80131000     # ->unk3C
@@ -110,6 +117,8 @@ class Machine:
     # memory ---------------------------------------------------------------
     def off(self, a):
         o = a & 0x1FFFFFFF
+        if 0x1F800000 <= o < 0x1F800400:   # scratchpad (vs_scratch): parked at the top of the model RAM
+            o = 0x1FF000 + (o & 0x3FF)
         assert o < len(self.mem), hex(a)
         return o
 
@@ -146,6 +155,7 @@ class Machine:
         self.wr(ACT2 + 0x954, 0)
         self.wr(TICK, 2)
         self.wr(ACTOR + A_ANIM, 1, 1)
+        self.wr(0x1F800008, SCRATCH_UNK8)   # vs_scratch.unk8
         self.status = 0
         self.busy = 0
         self.sheathe_frames = 6    # frames the sheathe animation (id 10) lasts
@@ -232,6 +242,7 @@ class Machine:
             if self.held[i] >= 20 and not ((self.held[i] - 20) & 3):
                 rep |= 1 << i
         self.wr(REPEAT, rep)
+        self.last_pad = (st, pressed, rep)   # what the driver reported this frame (the hook may change it afterwards)
         return 1
 
     def setup_stubs(self):
@@ -279,7 +290,26 @@ class Machine:
                 raw.append(m.rd(a, 1))
                 a += 1
             m.log.append(('text', raw.decode('latin1'), sx(m.r[5]), sx(m.r[5] >> 16), m.r[6], m.r[7]))
-        reg('vs_battle_renderTextRawColor', text)
+        reg('vs_battle_renderTextRawColor', text)   # the raw font: must not be used any more (see test_label_weapons)
+
+        # the small font: vs_battle_setFontStyle(pal) selects font table 0 + palette,
+        # vs_battle_printVariableWidthFontChar(glyph, x, y, ot) draws and returns the next x
+        # (a space, glyph 0x8F, draws nothing and advances 6, as in the game)
+        reg('vs_battle_setFontStyle', lambda m: m.log.append(('style', m.r[4])))
+
+        def s32(v):
+            return ((v + 0x80000000) & 0xFFFFFFFF) - 0x80000000
+
+        def glyph(m):
+            c, x, y, ot = m.r[4], s32(m.r[5]), s32(m.r[6]), m.r[7]
+            m.log.append(('glyph', c, x, y, ot))
+            m.set_v0(x + (6 if c == 0x8F else m.rd(CHAR_WIDTHS + c, 1)))
+        reg('vs_battle_printVariableWidthFontChar', glyph)
+
+        # first person look: the helpers func_8006EC7C calls
+        self.stubs[0x800AA850] = ('func_800AA850', lambda m: m.log.append(('actorYaw', m.r[4], m.r[5], m.r[6])))
+        self.stubs[0x800A1108] = ('func_800A1108', lambda m: None)
+        self.stubs[0x8007AAF8] = ('lookAt', lambda m: m.log.append(('lookAt',)))
 
         def toggle(m):
             """func_800734C0 -> func_8007C0AC(0, 2) + mode 10"""
@@ -478,7 +508,44 @@ class Machine:
         self.r[4], self.r[5], self.r[6], self.r[7] = a0, a1, a2, a3
         return self.run(addr)
 
+    shim_r1 = True
+    _last_hw = 0
+
     def frame(self, hw=0, stick=(128, 128), lstick=(128, 128)):
+        """one game frame. In the classic variant there is no L1/R1 weapon cycling: the tests of the swap
+        state machine that press R1 are driven through the overlay instead (L2+R2, then the slot button of
+        the weapon R1 would have picked), so that the same machine is exercised."""
+        was = self._last_hw
+        self._last_hw = hw
+        edge = hw & ~was & (L1 | R1)
+        if (CLASSIC and self.shim_r1 and edge and not (hw & (L2 | R2)) and self.rd(MODE) == 1
+                and (self.rd(MENU, 1) & 0x3F) == 0x3F):
+            d = 1 if edge & R1 else -1
+            slots = {}
+            for e in range(8):
+                w = self.weapon(e)
+                if w['blade'] and w['fav']:
+                    slots[w['fav']] = e
+            eq = self.equipped()
+            cur = next((w['fav'] for w in [self.weapon(e) for e in eq]), 0)
+            if cur == 0:
+                cur = 0 if d > 0 else 9
+            target = None
+            for j in range(1, 9):
+                s = ((cur - 1 + d * j) & 7) + 1
+                if s in slots and slots[s] not in eq:
+                    target = s
+                    break
+            if target is None:   # nothing to pick: press an empty slot (the "invalid" case)
+                target = next((s for s in range(1, 9) if s not in slots), 1)
+            self.wr(MODE, 6)
+            self._frame(L2 | R2, stick, lstick)
+            r = self._frame(L2 | R2 | SLOT_BTN_T[target - 1], stick, lstick)
+            self.log[:] = [e for e in self.log if e != ('exit6',)]
+            return r
+        return self._frame(hw, stick, lstick)
+
+    def _frame(self, hw=0, stick=(128, 128), lstick=(128, 128)):
         self.frame_hw = hw
         self.frame_stick = stick
         self.frame_lstick = lstick
@@ -722,19 +789,10 @@ def test_camera():
     m.frame(0, stick=(0, 128))
     check(m.camera_view() == R1, 'left -> R1')
     m.frame(0, stick=(128, 128))
-    # PADj
-    m.frame(0, stick=(255, 128))
-    check(m.rd(PRESSED) & PADJ == 0 and m.rd(STATE) & PADJ == 0 and m.rd(PREV) & PADJ == 0
-          and m.rd(REPEAT) & PADJ == 0, 'sideways deflection: PADj suppressed')
+    # PADj: see test_r3 (the fake R3 of the right stick is dropped in every direction)
     m.frame(0, stick=(128, 128))
-    m.frame(0, stick=(128, 255))
-    check(m.rd(PRESSED) & PADJ != 0 and m.camera_view() == 0, 'vertical deflection still gives PADj (first person)')
-    m.frame(0, stick=(128, 128))
-    # real R3 click with centred stick stays
-    m.frame(PADJ, stick=(128, 128))
-    check(m.rd(PRESSED) & PADJ != 0, 'real R3 with centred stick passes')
     m.frame(0)
-    # real L1/R1 do not leak into Prev, but L2 etc do
+    # real L1/R1 do not leak into Prev, but L2 etc do (the right stick is pushed sideways: PADj dropped)
     m.frame(L1 | R1 | L2 | CIR, stick=(255, 128))
     check(m.rd(PREV) == (L2 | CIR | L1), 'prev keeps other buttons, L1 only synthetic (%x)' % m.rd(PREV))
     # non-camera modes / menu: raw
@@ -1021,12 +1079,14 @@ def test_fuzz(seed=1, frames=12000):
     import random
     rnd = random.Random(seed)
     m = Machine()
+    m.shim_r1 = False
     s_loading = SYMS_BLOB['s_loading']
     m.setup_weapons({0, 2, 5}, 0, blade_cat={0: 1, 1: 3, 2: 2, 3: 7, 4: 4, 5: 9, 6: 5, 7: 8})
     hw = 0
     stick = (128, 128)
     lstick = (128, 128)
     prev_hw = 0
+    prev_r3 = 0
     swaps = 0
     frozen_frames = 0
     max_frozen = 0
@@ -1053,7 +1113,7 @@ def test_fuzz(seed=1, frames=12000):
                 m.wr(TB + 7 * TB_SIZE + TB_STRING, rnd.choice([0, 0x80100000, INV + 8, INV + 0x28]))
         if rnd.random() < 0.3:
             hw = 0
-            for bit in (L2, R2, L1, R1, TRI, CIR, CRS, SQR, SELECT, START, DUP, DDOWN, DLEFT, DRIGHT):
+            for bit in (L2, R2, L1, R1, TRI, CIR, CRS, SQR, SELECT, START, DUP, DDOWN, DLEFT, DRIGHT, PADJ):
                 if rnd.random() < 0.25:
                     hw |= bit
             if rnd.random() < 0.3:
@@ -1094,19 +1154,39 @@ def test_fuzz(seed=1, frames=12000):
             frozen_frames = 0
         # input masks
         pressed = m.rd(PRESSED)
-        field = (m.rd(MENU, 1) & 0x3F) == 0x3F and 1 <= was_mode <= 3 and not loading
+        closed = (m.rd(MENU, 1) & 0x3F) == 0x3F
+        field = closed and 1 <= was_mode <= 3 and not loading
         st = hw | (PADJ if (stick[0] < 32 or stick[0] >= 225 or stick[1] < 32 or stick[1] >= 225) else 0)
         st |= (PADLLEFT if lstick[0] < 16 else 0) | (PADLRIGHT if lstick[0] >= 241 else 0) \
             | (PADLUP if lstick[1] < 16 else 0) | (PADLDOWN if lstick[1] >= 241 else 0)
         edges = st & ~prev_hw
-        if field:
-            check(pressed & (L1 | R1) == 0, 'fuzz: L1/R1 leaked into Pressed in the field')
-            check(m.rd(PREV) & ~(L1 | R1 | PADJ) == (hw & ~(L1 | R1 | PADJ)) or True, 'prev')
-            # buttons other than L1, R1, Select(R2 toggle) are unchanged
-            keep = ~(L1 | R1 | SELECT | PADJ) & 0xFFFF
-            check(pressed & keep == edges & keep, 'fuzz: pressed changed %x vs %x' % (pressed & keep, edges & keep))
-        elif not loading and (m.rd(MENU, 1) & 0x3F) != 0x3F:
-            check(pressed & 0xFFF == edges & 0xFFF, 'fuzz: menu open pressed altered %x vs %x' % (pressed, edges))
+        if CLASSIC:
+            # classic: the pad state is the driver's, bit for bit (fake R3 and L1/R1 included), except the
+            # buttons the overlay itself consumes: Select with R2 in mode 1, the shortcut buttons and Select
+            # while L2+R2 are held in mode 6
+            keep = 0xFFFFFFFF
+            if closed and was_mode == 1 and (hw & R2) and (edges & SELECT):
+                keep &= ~SELECT
+            if closed and was_mode == 6 and (hw & (L2 | R2)) == (L2 | R2):
+                keep &= ~(SEL_SHORTCUT_BITS | SELECT)
+            if not loading or not closed:
+                check(pressed & keep == edges & keep, 'fuzz (classic): pressed %x vs the driver %x' % (pressed & keep, edges & keep))
+                check(m.rd(STATE) & keep == st & keep and m.rd(PREV) & keep == st & keep,
+                      'fuzz (classic): state/prev changed %x %x vs %x' % (m.rd(STATE), m.rd(PREV), st))
+        else:
+            if field:
+                check(pressed & (L1 | R1) == 0, 'fuzz: L1/R1 leaked into Pressed in the field')
+                # buttons other than L1, R1, Select(R2 toggle) are unchanged
+                keep = ~(L1 | R1 | SELECT | PADJ) & 0xFFFF
+                check(pressed & keep == edges & keep, 'fuzz: pressed changed %x vs %x' % (pressed & keep, edges & keep))
+            elif not loading and not closed:
+                check(pressed & 0xFFF == edges & 0xFFF, 'fuzz: menu open pressed altered %x vs %x' % (pressed, edges))
+            if closed:
+                # the pad driver's fake R3 (right stick) never reaches the game in the field; the real R3 does
+                check(pressed & PADJ == hw & PADJ & ~prev_r3 and m.rd(STATE) & PADJ == hw & PADJ
+                      and m.rd(PREV) & PADJ == hw & PADJ and m.rd(REPEAT) & PADJ == pressed & PADJ,
+                      'fuzz: PADj not the real R3 (pressed %x state %x hw %x)' % (pressed & PADJ, m.rd(STATE) & PADJ, hw & PADJ))
+        prev_r3 = hw & PADJ
         prev_hw = st
         # statistics
         swaps += sum(1 for e in m.log if e[0] == 'equipWeapon')
@@ -1125,9 +1205,20 @@ S_LOADING_ADDR = SYMS_BLOB['s_loading']
 SLOT_BTN = [CIR, TRI, SQR, CRS, DUP, DDOWN, DRIGHT, DLEFT]    # slot 1..8
 SLOT_OF_ID = [2, 3, 1, 4, 5, 8, 7, 6]
 BUDGET = [74, 54, 64, 100, 110, 76, 52, 75]
-COL = [0x404040, 0x808080, 0xF0F080, 0x105096, 0x188CFF, 0x40E0FF, 0x6E6E6E, 0x188CFF]
-HINT, HINT_ASSIGN = '$SELECT: ASSIGN', '$ASSIGN: PRESS A SLOT'
+# small-font palettes: weapon, equipped, assign-mode weapon, assign-mode equipped, hint, assign prompt
+PAL = [4, 5, 6, 5, 7, 6]
 SEL_SHORTCUT_BITS = 0xF0F0   # Circle/Triangle/Square/Cross + D-pad: the game's own shortcut buttons
+
+
+def enc_raw(text):
+    """the hint strings: game encoding, no padding"""
+    out = []
+    for ch in text:
+        out.append({' ': 0x8F, ':': 0x9E}.get(ch, 10 + ord(ch) - 65 if 'A' <= ch <= 'Z' else None))
+    return bytes(out) + b'\xE7'
+
+
+HINT, HINT_ASSIGN = enc_raw('SELECT: ASSIGN'), enc_raw('ASSIGN: PRESS A SLOT')
 
 
 def enc(text):
@@ -1146,33 +1237,32 @@ def enc(text):
     return bytes(out) + b'\xE7' * (24 - len(out))
 
 
-def font_adv(m, ch):
-    c = ord(ch) - 0x20
-    return (m.rd(0x800EB7B4 + (c >> 1), 1) >> ((c << 2) & 4)) & 0xF
+def adv(m, c):
+    """advance of a glyph of the small font (table 0); a space (0x8F) advances 6 and draws nothing"""
+    return 6 if c == 0x8F else m.rd(CHAR_WIDTHS + c, 1)
 
 
-def ref_ascii(m, raw, budget):
-    out = ''
-    for c in raw:
-        if c < 10:
-            ch = chr(48 + c)
-        elif c < 0x24:
-            ch = chr(65 + c - 10)
-        elif c < 0x3E:
-            ch = chr(65 + c - 0x24)
-        elif c == 0xA7:
-            ch = '-'
-        elif c == 0xA0:
-            ch = '.'
-        elif c == 0xE7:
+def ref_small(m, raw, budget, align, x, y, pal):
+    """the calls drawSmall must make: setFontStyle(pal), then one glyph call per character that fits into
+    budget pixels (trailing spaces dropped), aligned left (0), centred (1) or ending at x (2), drawn at y - 1,
+    the sprites linked at vs_scratch.unk8 - 12 (the `ot` argument; the font routine adds 12)"""
+    i = wd = 0
+    raw = bytes(raw)[:24]
+    while i < len(raw) and raw[i] < 0xAE:
+        w = adv(m, raw[i])
+        if wd + w > budget:
             break
-        else:
-            ch = ' '
-        budget -= font_adv(m, ch)
-        if budget < 0:
-            break
-        out += ch
-    return out.rstrip(' ')
+        wd += w
+        i += 1
+    while i > 0 and raw[i - 1] == 0x8F:
+        i -= 1
+        wd -= 6
+    out = [('style', pal)]
+    xx = x - ((wd * align) >> 1)
+    for c in raw[:i]:
+        out.append(('glyph', c, xx, y - 1, SCRATCH_UNK8 - 12))
+        xx += adv(m, c)
+    return out
 
 
 def native_xy(m, id_, anim):
@@ -1229,6 +1319,11 @@ def test_label_original():
     check(m.rd(S_WMODE) == 0, 'R2 alone: native labels')
 
 
+def raw_name(m, entry):
+    a = m.off(INV + entry * W_SIZE + W_NAME)
+    return bytes(m.mem[a:a + 24])
+
+
 def test_label_weapons():
     m = overlay_machine()
     n = 0
@@ -1242,29 +1337,55 @@ def test_label_weapons():
                 v = m.call(LABEL, i)
                 x, y, bx, by = native_xy(m, i, anim)
                 w = [e for e in range(8) if SLOT_OF_ID[i] == e + 1][0]
-                raw = bytes(m.mem[m.off(INV + w * W_SIZE + W_NAME):m.off(INV + w * W_SIZE + W_NAME) + 24])
-                want_name = ref_ascii(m, raw, BUDGET[i])
-                want_text = ('#' if i & 1 else '') + want_name
-                col = COL[(3 if assign else 0) + 1 + (1 if w == 0 else 0)]
-                exp = [('bullet', bx, by, 0x180), ('text', want_text, x - (2 if i & 1 else 0), y, col, 0)]
+                pal = PAL[assign * 2 + (1 if w == 0 else 0)]
+                exp = [('bullet', bx, by, 0x180)]
+                exp += ref_small(m, raw_name(m, w), BUDGET[i], 2 if i & 1 else 0, x - (2 if i & 1 else 0), y, pal)
                 if i == 4 and anim == 0:
-                    exp.append(('text', HINT_ASSIGN if assign else HINT, 160, 142, COL[7 if assign else 6], 0))
+                    exp += ref_small(m, HINT_ASSIGN if assign else HINT, 320, 1, 160, 142, PAL[4 + assign])
                 check(v == 0 and m.log == exp, 'label id %d anim %d assign %d:\n   got  %s\n   want %s' % (i, anim, assign, m.log, exp))
+                check(not any(e[0] == 'text' for e in m.log), 'the raw-text font (glyph 0 = HUD digits in the field) is not used')
                 n += 1
-    print('labels (positions vs the game tables, names, colours, hint): %d cases' % n)
-    # truncation to the width budget: no label is wider than its budget; names are cut, not wrapped
+    print('labels (positions vs the game tables, names, small-font palettes, hint): %d cases' % n)
+    # names with spaces: every space is glyph 0x8F (the font routine draws nothing and advances 6) -- never the raw
+    # font's glyph 0, which shows a digit in the field
     m.wr(S_ASSIGN, 0)
-    m.wr(D_ANIM, 0, 1)
-    for nm in ('A' * 24, 'W' * 24, 'I' * 24, 'Hand Axe', 'Aa Bb Cc Dd Ee Ff Gg Hh', 'Ab-Cd.Ef 0123456789', ' ' * 5 + 'X', 'X ' * 12):
+    m.wr(D_ANIM, 1, 1)      # (the hint line is drawn only at animation step 0)
+    spaced = 0
+    for i in range(8):
+        w = SLOT_OF_ID[i] - 1
+        m.log.clear()
+        m.call(LABEL, i)
+        glyphs = [e for e in m.log if e[0] == 'glyph']
+        if 0x8F in raw_name(m, w)[:len(glyphs)]:
+            spaced += 1
+            sp = [k for k, e in enumerate(glyphs) if e[1] == 0x8F]
+            check(sp, 'id %d: a name with a space draws it as glyph 0x8F' % i)
+            for k in sp:
+                if k + 1 < len(glyphs):
+                    check(glyphs[k + 1][2] == glyphs[k][2] + 6, 'id %d: the space advances 6 px' % i)
+    check(spaced >= 4, 'test names with spaces were drawn (%d)' % spaced)
+    # truncation to the width budget: no label is wider than its budget; names are cut, not wrapped; right
+    # aligned labels (odd id) end at their anchor
+    for nm in ('A' * 24, 'W' * 24, 'I' * 24, 'Hand Axe', 'Aa Bb Cc Dd Ee Ff Gg Hh', 'Ab-Cd.Ef 0123456789', ' ' * 5 + 'X', 'X ' * 12,
+               'Bandit Knife', "Dragon's Tail Whip Spear"):
         for i in range(8):
-            m.w(INV + (SLOT_OF_ID[i] - 1) * W_SIZE + W_NAME, enc(nm))
+            w = SLOT_OF_ID[i] - 1
+            m.w(INV + w * W_SIZE + W_NAME, enc(nm))
             m.log.clear()
             m.call(LABEL, i)
-            t = [e for e in m.log if e[0] == 'text'][0][1].lstrip('#')
-            width = sum(font_adv(m, ch) for ch in t)
+            glyphs = [e for e in m.log if e[0] == 'glyph']
+            width = sum(adv(m, e[1]) for e in glyphs)
             check(width <= BUDGET[i], 'name %r id %d is %d px > %d' % (nm, i, width, BUDGET[i]))
-            check(t == t.rstrip(' ') and t == ref_ascii(m, enc(nm), BUDGET[i]), 'name %r id %d -> %r' % (nm, i, t))
-    # empty slot: "--", dark, dimmed bullet; unknown characters become spaces; the terminator ends the name
+            x, y, bx, by = native_xy(m, i, 1)
+            anchor = x - (2 if i & 1 else 0)
+            exp = ref_small(m, enc(nm), BUDGET[i], 2 if i & 1 else 0, anchor, y, PAL[1 if w == 0 else 0])
+            check([e for e in m.log if e[0] in ('style', 'glyph')][:len(exp)] == exp, 'name %r id %d' % (nm, i))
+            check(not glyphs or glyphs[-1][1] != 0x8F, 'no trailing space drawn')
+            if i & 1 and glyphs:
+                check(glyphs[-1][2] + adv(m, glyphs[-1][1]) == anchor, 'name %r id %d right aligned' % (nm, i))
+            if not (i & 1) and glyphs:
+                check(glyphs[0][2] == anchor, 'name %r id %d left aligned' % (nm, i))
+    # an empty slot draws the dimmed native bullet only: no "--", no text, no glyph, no font call
     m = overlay_machine(slots={0: 3, 1: 0})
     for anim in (0, 5):
         m.wr(D_ANIM, anim, 1)
@@ -1273,20 +1394,20 @@ def test_label_weapons():
             m.call(LABEL, i)
             x, y, bx, by = native_xy(m, i, anim)
             if SLOT_OF_ID[i] in (3, ):
-                check(m.log[0][3] == 0x180 and m.log[1][1].lstrip('#') == 'DAGGER', 'slot 3 weapon shown')
+                check(m.log[0][3] == 0x180 and any(e[0] == 'glyph' for e in m.log), 'slot 3 weapon shown')
             else:
-                check(m.log[0] == ('bullet', bx, by, 0x140) and m.log[1][1] == ('#' if i & 1 else '') + '--'
-                      and m.log[1][4] == COL[0], 'empty slot id %d: %s' % (i, m.log))
+                hint = [] if not (i == 4 and anim == 0) else ref_small(m, HINT, 320, 1, 160, 142, PAL[4])
+                check(m.log == [('bullet', bx, by, 0x140)] + hint, 'empty slot id %d draws only the bullet: %s' % (i, m.log))
     m.wr(S_ASSIGN, 1)
     m.log.clear()
     m.call(LABEL, 0)
-    check(m.log[1][4] == COL[3], 'empty slot in assign mode is orange-dim')
+    check(len(m.log) == 1 and m.log[0][0] == 'bullet', 'empty slot in assign mode: bullet only')
     # a record without a blade is not a weapon
     m = overlay_machine(slots={0: 1})
     m.wr(INV + 0 * W_SIZE + W_BLADE, 0, 1)
     m.log.clear()
     m.call(LABEL, 2)
-    check(m.log[1][1] == '--', 'slot of an empty record shows --')
+    check(len(m.log) == 1 and m.log[0][0] == 'bullet' and m.log[0][3] == 0x140, 'slot of an empty record: bullet only')
 
 
 def press(m, btn, extra=L2 | R2, lstick=(128, 128)):
@@ -1438,7 +1559,8 @@ def test_assign_mode():
     m.wr(D_ANIM, 0, 1)
     m.log.clear()
     m.call(LABEL, 4)
-    check(m.log[-1][1:3] == (HINT_ASSIGN, 160) and m.log[-1][4] == COL[7], 'assign hint: %s' % (m.log[-1],))
+    want = ref_small(m, HINT_ASSIGN, 320, 1, 160, 142, PAL[5])
+    check(m.log[-len(want):] == want and not any(e[0] == 'text' for e in m.log), 'assign hint (small font, no raw text): %s' % (m.log[-3:],))
     m.log.clear()
     m.frame(L2 | R2 | SELECT)
     check(m.rd(S_ASSIGN) == 0 and ('sfx', 'leave') in m.log, 'Select again: off, sound')
@@ -1737,21 +1859,295 @@ def test_code_budget():
     allowed = [(0x800733F8, 140), (0x8007991C, 4), (0x8007FF8C, 116), (0x80099854, 268), (0x8009BD90, 204),
                (0x800AA108, 392), (0x800B26B8, 496), (0x800CA0A4, 4), (0x800CA1AC, 4), (0x800D155C, 284),
                (0x800D197C, 412), (0x800F5924, 0x800F6000 - 0x800F5924)]
+    if not CLASSIC:
+        allowed += [(0x8007A10C, 4), (0x800D9910, 604)]   # first-person look hook; func_800D9910 (nextSlot, wfp_look)
+    # the first-person look call: patched in the default variant only, and it is the only call of func_8006EC7C
+    jal_fp = lambda t: 0x0C000000 | ((t >> 2) & 0x3FFFFFF)
+    sites = [PRG_BASE + o for o in range(0, len(PRG_ORIG) - 3, 4) if struct.unpack_from('<I', PRG_ORIG, o)[0] == jal_fp(0x8006EC7C)]
+    check(sites == [0x8007A10C], 'func_8006EC7C is called from exactly one place in the game: %s' % [hex(s) for s in sites])
+    now = struct.unpack_from('<I', PRG, 0x8007A10C - PRG_BASE)[0]
+    if CLASSIC:
+        check(now == jal_fp(0x8006EC7C), 'classic: the first-person call is the original')
+    else:
+        check(now == jal_fp(SYMS_BLOB['wfp_look']), 'default: the first-person call goes to wfp_look')
     stray = [i for i in changed if not any(a - PRG_BASE <= i < a - PRG_BASE + n for a, n in allowed)]
     check(not stray, 'bytes changed outside the allowed ranges: %s' % [hex(i + PRG_BASE) for i in stray[:8]])
     print('changed byte clusters: %s' % ', '.join('%08X+%d' % (a + PRG_BASE, b - a) for a, b in ranges))
 
 
+# ===========================================================================
+# default variant: the pad driver's fake R3, first-person look
+# ===========================================================================
+def test_r3():
+    """PADj: in the field (menu closed) only the real R3 button reaches the game, in every game mode; the fake one
+    the pad driver ORs in when the right stick is pushed far in any direction never does. Start is untouched."""
+    sticks = {'up': (128, 0), 'down': (128, 255), 'left': (0, 128), 'right': (255, 128), 'corner': (255, 255),
+              'corner2': (0, 0)}
+    n = 0
+    for mode in (0, 1, 2, 3, 5, 6, 7, 8, 10):
+        for name, st in sticks.items():
+            m = Machine()
+            m.setup_weapons(set(), 0)
+            m.wr(MODE, mode)
+            m.frame(0)
+            for _ in range(3):
+                m.frame(0, stick=st)
+                raw = m.rd(PADBUF + 2, 1)
+                check(m.rd(STATE) & PADJ == 0 and m.rd(PRESSED) & PADJ == 0 and m.rd(REPEAT) & PADJ == 0
+                      and m.rd(PREV) & PADJ == 0,
+                      'mode %d stick %s: fake PADj reached the game (state %x pressed %x)' % (mode, name, m.rd(STATE), m.rd(PRESSED)))
+                check(raw & 4, 'model: the real R3 bit is not set')
+                n += 1
+    print('right stick, 6 directions x 9 game modes: PADj never reaches the game (%d frames)' % n)
+    # real R3
+    m = Machine()
+    m.setup_weapons(set(), 0)
+    m.frame(0)
+    edges = 0
+    for k in range(6):
+        m.frame(PADJ)
+        edges += (m.rd(PRESSED) & PADJ) != 0
+        check(m.rd(STATE) & PADJ and m.rd(PREV) & PADJ, 'real R3 held: state/prev')
+    check(edges == 1, 'real R3 held: exactly one press edge (%d)' % edges)
+    m.frame(0)
+    check(m.rd(STATE) & PADJ == 0 and m.rd(PRESSED) & PADJ == 0, 'real R3 released')
+    # real R3 pressed while the right stick is already pushed (the driver's fake bit was up): still a press edge
+    m.frame(0, stick=(128, 255))
+    m.frame(0, stick=(128, 255))
+    m.frame(PADJ, stick=(128, 255))
+    check(m.rd(PRESSED) & PADJ, 'real R3 with the right stick held: press edge')
+    m.frame(PADJ, stick=(128, 255))
+    check(m.rd(PRESSED) & PADJ == 0 and m.rd(STATE) & PADJ, 'R3 + stick held: no second edge')
+    m.frame(PADJ, stick=(128, 128))
+    check(m.rd(PRESSED) & PADJ == 0 and m.rd(STATE) & PADJ, 'stick released, R3 still down: no edge, still held')
+    m.frame(0, stick=(128, 255))
+    check(m.rd(STATE) & PADJ == 0 and m.rd(PRESSED) & PADJ == 0, 'R3 released with the stick pushed: gone')
+    # R3 click with the stick pushed in every direction
+    for name, st in sticks.items():
+        m = Machine()
+        m.setup_weapons(set(), 0)
+        m.frame(0, stick=st)
+        m.frame(PADJ, stick=st)
+        check(m.rd(PRESSED) & PADJ, 'R3 click, stick %s' % name)
+    # Start still works, stick or not
+    for st in ((128, 128), (128, 255)):
+        m = Machine()
+        m.setup_weapons(set(), 0)
+        m.frame(0, stick=st)
+        m.frame(START, stick=st)
+        check(m.rd(PRESSED) & START and m.rd(STATE) & START and m.rd(PREV) & START, 'Start with stick %s' % (st,))
+    # menu open: the game gets what the driver says
+    m = Machine()
+    m.setup_weapons(set(), 0)
+    m.wr(MENU, 0)
+    m.frame(0, stick=(128, 255))
+    check(m.rd(STATE) & PADJ and m.rd(PRESSED) & PADJ, 'menu open: untouched')
+    # the right stick still drives the camera (existing feature): sideways only
+    m = Machine()
+    m.setup_weapons(set(), 0)
+    m.frame(0)
+    m.frame(0, stick=(255, 128))
+    check(m.camera_view() == L1, 'right stick right still rotates the camera')
+    m.frame(0, stick=(128, 255))
+    check(m.camera_view() == 0 and m.rd(STATE) & PADJ == 0, 'right stick down: no camera, no PADj')
+
+
+def fp_run(m, prev, left, right, yaw, pitch, mode=7):
+    """call wfp_look with the given state; returns (yaw, pitch, log)"""
+    m.log.clear()
+    m.wr(PORTINFO, mode, 1)
+    m.wr(PORTINFO + 3, left[0], 1)
+    m.wr(PORTINFO + 4, left[1], 1)
+    m.wr(STICK, right[0])
+    m.wr(STICK + 4, right[1])
+    m.wr(PREV, prev)
+    m.wr(CAM, yaw & 0xFFFFFFFF)
+    m.wr(CAM + 4, pitch & 0xFFFFFFFF)
+    m.call(SYMS_BLOB['wfp_look'])
+    return m.rds(CAM), m.rds(CAM + 4), list(m.log)
+
+
+def tdiv(a, b):
+    q = abs(a) // b
+    return q if a >= 0 else -q
+
+
+def tmod(a, b=4096):
+    r = abs(a) % b
+    return r if a >= 0 else -r
+
+
+def fp_ref(prev, left, right, yaw, pitch, mode=7):
+    """first person look: the right stick (mod), then the game's func_8006EC7C with up/down inverted"""
+    dx, dy = right[0] - 128, right[1] - 128
+    if dx + 64 < 0 or dx + 64 > 128:
+        d = dx - 64 if dx > 0 else dx + 64
+        yaw = (yaw + tdiv(d, 3)) & 0xFFF
+    if dy + 64 < 0 or dy + 64 > 128:
+        d = dy - 64 if dy > 0 else dy + 64
+        pitch -= tdiv(d, 3)
+    # func_8006EC7C
+    if prev & DDOWN:
+        pitch = tmod(pitch - 32)
+    if prev & DUP:
+        pitch = tmod(pitch + 32)
+    if prev & DLEFT:
+        yaw = tmod(yaw - 32)
+    if prev & DRIGHT:
+        yaw = tmod(yaw + 32)
+    if mode == 7:
+        ax, ay = left
+        a, b = ax - 128, ay - 128
+        if ax - 64 < 0 or ax - 64 > 128:
+            v = ax - 64 if a <= 0 else ax - 192
+            yaw = tmod(yaw + tdiv(v, 3))
+        if b + 64 < 0 or b + 64 > 128:
+            v = b + 64 if b <= 0 else b - 64
+            pitch = tmod(pitch - tdiv(v, 3))
+    pitch = max(-896, min(896, pitch)) if (pitch > 896 or pitch < -896) else pitch
+    return yaw, pitch
+
+
+def test_first_person():
+    import random
+    rnd = random.Random(7)
+    m = Machine()
+    C = (128, 128)
+    # --- directions (all relative to the angles before): up/down inverted, left/right as before
+    y, p, log = fp_run(m, DUP, C, C, 0, 0)
+    check((y, p) == (0, 32), 'D-pad up inverted: pitch +32 (was -32): %s' % ((y, p),))
+    y, p, log = fp_run(m, DDOWN, C, C, 0, 0)
+    check((y, p) == (0, -32), 'D-pad down inverted: pitch -32')
+    y, p, log = fp_run(m, DLEFT, C, C, 0, 0)
+    check((y, p) == (-32, 0), 'D-pad left unchanged: yaw -32')
+    y, p, log = fp_run(m, DRIGHT, C, C, 0, 0)
+    check((y, p) == (32, 0), 'D-pad right unchanged: yaw +32')
+    for name, left, right in (('left', (128, 255), C), ('right', C, (128, 255))):
+        y, p, log = fp_run(m, 0, left, right, 0, 0)
+        check(y == 0 and p == -tdiv(128 - 64, 3), '%s stick down: pitch %d (inverted, was +): %s' % (name, p, (y, p)))
+        y, p, log = fp_run(m, 0, (128, 0) if name == 'left' else C, C if name == 'left' else (128, 0), 0, 0)
+        check(y == 0 and p == tdiv(128 - 64, 3), '%s stick up: pitch +%d' % (name, p))
+        y, p, log = fp_run(m, 0, (255, 128) if name == 'left' else C, C if name == 'left' else (255, 128), 0, 0)
+        check(p == 0 and y == tdiv(127 - 64, 3), '%s stick right: yaw +%d' % (name, y))
+        y, p, log = fp_run(m, 0, (0, 128) if name == 'left' else C, C if name == 'left' else (0, 128), 0, 0)
+        check(p == 0 and y == (-tdiv(128 - 64, 3) & 0xFFF if name == 'right' else -tdiv(128 - 64, 3)),
+              '%s stick left: yaw %d' % (name, y))
+    # --- the right stick has the speed and the dead zone of the left stick
+    for v in range(0, 256):
+        yl, pl, _ = fp_run(m, 0, (v, v), C, 0, 0)
+        yr, pr, _ = fp_run(m, 0, C, (v, v), 0, 0)
+        check(pl == pr and (yl & 0xFFF) == (yr & 0xFFF), 'left/right stick give the same look at %d: %s %s' % (v, (yl, pl), (yr, pr)))
+        if 64 <= v <= 192:
+            check(yr == 0 and pr == 0, 'dead zone at %d' % v)
+    # both sticks add up
+    y, p, _ = fp_run(m, 0, (255, 128), (255, 128), 0, 0)
+    check(y == 2 * tdiv(127 - 64, 3), 'both sticks add up')
+    # --- the clamp of the original still applies
+    y, p, _ = fp_run(m, 0, C, (128, 255), 0, -890)
+    check(p == -896, 'pitch clamped at -896: %d' % p)
+    y, p, _ = fp_run(m, DUP, C, (128, 0), 0, 890)
+    check(p == 896, 'pitch clamped at +896: %d' % p)
+    # --- the update runs once per call, the world is told the new yaw
+    y, p, log = fp_run(m, 0, C, (255, 128), 100, 0)
+    check([e[0] for e in log] == ['actorYaw', 'lookAt'] and log[0][2] == y & 0xFFF, 'one update per call: %s' % (log,))
+    # --- random cases against the reference model
+    bad = 0
+    for _ in range(3000):
+        prev = rnd.choice([0, DUP, DDOWN, DLEFT, DRIGHT, DUP | DLEFT, DDOWN | DRIGHT]) | rnd.choice([0, L2, SELECT])
+        left = (rnd.choice([0, 30, 63, 64, 65, 100, 128, 128, 160, 191, 192, 193, 255]), rnd.choice([0, 30, 63, 64, 65, 128, 128, 192, 193, 255]))
+        right = (rnd.randrange(256), rnd.randrange(256))
+        yaw = rnd.choice([0, 1, 1000, -1000, -4000, 4095, 2048])
+        pitch = rnd.choice([0, 100, -100, 500, -500, 880, -880, 896, -896])
+        mode = rnd.choice([7, 7, 7, 4])
+        y, p, _ = fp_run(m, prev, left, right, yaw, pitch, mode)
+        ry, rp = fp_ref(prev, left, right, yaw, pitch, mode)
+        if (y, p) != (ry, rp):
+            bad += 1
+            if bad < 5:
+                print('  first person mismatch prev=%x left=%s right=%s yaw=%d pitch=%d mode=%d: got %s want %s'
+                      % (prev, left, right, yaw, pitch, mode, (y, p), (ry, rp)))
+    check(bad == 0, 'first person look matches the model in all random cases (%d wrong)' % bad)
+    # digital pad (mode 4): the right stick buffer is 128 (the driver centres it): nothing but the D-pad
+    y, p, _ = fp_run(m, 0, C, C, 5, 5, mode=4)
+    check((y, p) == (5, 5), 'no input, no change')
+    print('first person: directions, dead zone, speed, clamp, 3000 random cases checked')
+
+
+# ===========================================================================
+# classic variant: everything outside the overlay is the game's
+# ===========================================================================
+def test_classic_passthrough():
+    import random
+    rnd = random.Random(3)
+    # L1/R1 do what the game does (rotate the camera) and nothing else: no weapon cycling
+    m = Machine()
+    m.shim_r1 = False
+    m.setup_weapons(set(), 0, slots={0: 1, 1: 2, 2: 3})
+    m.frame(0)
+    m.log.clear()
+    for btn in (L1, R1, L1 | R1):
+        m.frame(btn)
+        check(m.rd(PRESSED) & (L1 | R1) == btn & (L1 | R1) and m.rd(STATE) & (L1 | R1) == btn
+              and m.rd(PREV) & (L1 | R1) == btn and m.rd(REPEAT) & (L1 | R1) == btn & (L1 | R1),
+              'classic: L1/R1 %x pass through untouched (pressed %x prev %x)' % (btn, m.rd(PRESSED), m.rd(PREV)))
+        check(m.camera_view() == btn, 'classic: the camera sees real L1/R1 (%x)' % m.camera_view())
+        m.frame(0)
+    check(m.equipped() == [0] and not any(e[0] in ('equipWeapon', 'sfx') for e in m.log), 'classic: L1/R1 never swap weapons: %s' % m.log)
+    # the right stick: no camera synthesis, the fake R3 of the pad driver is the game's business as before
+    for st in ((255, 128), (0, 128), (128, 255), (128, 0), (255, 255)):
+        m.frame(0)
+        m.frame(0, stick=st)
+        want = PADJ
+        check(m.camera_view() == 0 and m.rd(STATE) & PADJ == want and m.rd(PRESSED) & PADJ == want and m.rd(PREV) & PADJ == want,
+              'classic: right stick %s untouched: PADj as the driver set it (state %x pressed %x)' % (st, m.rd(STATE), m.rd(PRESSED)))
+    # the hook is transparent: random frames, the pad words are exactly the driver's unless the overlay consumes a button
+    bad = 0
+    for _ in range(4000):
+        m = Machine()
+        m.shim_r1 = False
+        m.setup_weapons(set(), rnd.choice([-1, 0, 3]), slots={i: i + 1 for i in range(8) if rnd.random() < 0.6})
+        mode = rnd.choice([0, 1, 1, 1, 2, 3, 5, 7, 8, 10])
+        m.wr(MODE, mode)
+        m.wr(MENU, rnd.choice([0x3F, 0x3F, 0x3F, 0]))
+        hw0 = 0
+        for _f in range(3):
+            hw = 0
+            for bit in (L1, R1, TRI, CIR, CRS, SQR, START, DUP, DDOWN, DLEFT, DRIGHT, PADJ, L2):
+                if rnd.random() < 0.4:
+                    hw |= bit
+            stick = (rnd.choice([0, 64, 128, 128, 200, 255]), rnd.choice([0, 128, 128, 255]))
+            lst = (rnd.choice([0, 128, 128, 255]), rnd.choice([0, 128, 128, 255]))
+            if mode == 6:
+                hw &= ~R2
+            m.frame(hw, stick=stick, lstick=lst)
+            st, pr, rep = m.last_pad
+            ok = m.rd(STATE) == st and m.rd(PRESSED) == pr and m.rd(REPEAT) == rep and m.rd(PREV) == st
+            if not ok:
+                bad += 1
+                if bad < 4:
+                    print('  classic pad words changed: mode %d hw %x -> state %x/%x pressed %x/%x' % (mode, hw, m.rd(STATE), st, m.rd(PRESSED), pr))
+            if mode == 6:
+                break
+    check(bad == 0, 'classic: the pad words are exactly the driver\'s (%d frames differ)' % bad)
+    print('classic pass-through: L1/R1, right stick, 4000 random frames')
+
+
 if __name__ == '__main__':
+    print('variant: %s' % ('CLASSIC' if CLASSIC else 'default'))
     print('entry = 0x%08X  wslot_label = 0x%08X' % (ENTRY, LABEL))
     test_code_budget()
     test_label_original()
     test_label_weapons()
-    test_cycle()
-    test_cycle_slots()
-    test_swap_sequence()
-    test_gating()
-    test_camera()
+    if CLASSIC:
+        test_classic_passthrough()
+    else:
+        test_cycle()
+        test_cycle_slots()
+        test_swap_sequence()
+        test_gating()
+        test_camera()
+        test_r3()
+        test_first_person()
     test_quick_assign()
     test_migration()
     test_slot_press()

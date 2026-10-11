@@ -15,6 +15,8 @@ run 80099854 268 func_80099854 &    # func_80099854 + func_80099900 (adjacent)
 run 8009BD90 204 func_8009BD90 &
 run 800733F8 140 func_800733F8 &
 run 8007FF8C 116 func_8007FF8C &
+# the default variant also uses func_800D9910 (the classic one does not: #define WSWAP_CLASSIC 1)
+grep -q '^#define WSWAP_CLASSIC 1' src/mod/wswap.c || run 800D9910 604 func_800D9910 &
 wait
 sort "$out/summary.txt"
 grep -h RESULT "$out"/*.log | sort | uniq -c

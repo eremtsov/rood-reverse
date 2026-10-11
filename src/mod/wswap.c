@@ -1,6 +1,12 @@
 /*
- * Personal mod: weapon slots (L2+R2 overlay), L1/R1 slot cycling and the camera on
- * the right stick.
+ * Personal mod: weapon slots (L2+R2 overlay); in the default variant also L1/R1 slot
+ * cycling, the camera on the right stick, no accidental first-person view and the
+ * right stick looking around in first person.
+ *
+ * Two variants come from this one file (WSWAP_CLASSIC below, one line per branch):
+ *   default  (branch wslots)         everything listed here
+ *   classic  (branch wslots-classic) only the L2+R2 overlay, the slot buttons, the assign
+ *                                    mode and R2+Select; every other input is the game's own
  *
  * This unit is NOT part of the matching decompilation. It is compiled with the
  * BATTLE.PRG toolchain, linked by tools/mod/build_mod.sh and entered through a
@@ -9,7 +15,7 @@
  * the game references (tools/mod/check_dead.py), see tools/mod/wswap.ld.
  *
  * Controls (field only, never while a menu is open):
- *   R1 / L1                  next / previous assigned weapon slot (slot order)
+ *   R1 / L1                  next / previous assigned weapon slot (slot order)  [default]
  *   L2 + R2 (held)           the L2 overlay shows the weapon of each of the 8 slots
  *   ... + slot button        equip that slot's weapon (Circle, Triangle, Square, Cross,
  *                            D-pad Up, Down, Right, Left = slots 1..8; the D-pad slots
@@ -18,7 +24,11 @@
  *                            equipped weapon into that slot (moves it, or clears the
  *                            slot if it already was there)
  *   R2 (held) + Select       put the equipped weapon into the first free slot / clear it
- *   right stick X            camera rotation: right = old L1, left = old R1
+ *   right stick X            camera rotation: right = old L1, left = old R1     [default]
+ *   right stick Y            nothing in the field (the pad driver's fake R3 is dropped; the
+ *                            real R3 button and Start still toggle first person) [default]
+ *   first person             the right stick looks around like the left stick; up/down
+ *                            (stick and D-pad) are inverted (decomp edit in func_8006EC7C) [default]
  *
  * A swap with the weapon drawn plays the game's own sheathe animation first
  * (func_800734C0, the field sheathe/draw toggle), waits until func_8009E4B0 says the actor is
@@ -51,28 +61,33 @@ extern int vs_main_processPadState(void);
 extern int func_8009E4B0(int);
 extern void func_800734C0(void); /* toggle draw/sheathe (the field sheathe button) */
 extern void func_80073554(void); /* leave the L2 shortcut mode (6) for the field (1) */
+extern void func_8006EC7C(void); /* first person view: look around (D-pad, left stick) */
 extern int func_800C9EB8(int);   /* L2 overlay: is this label available? */
 extern void func_800C9F98(int xy, int id); /* L2 overlay: the small bullet */
 extern u_char D_800EBCE8;        /* L2 overlay slide counter, 10 = hidden, 0 = fully in */
-extern u_char D_800EB7B4[];      /* font: advance width per character, 4 bits each */
 extern void vs_battle_playMenuChangeSfx(void);
 extern void vs_battle_playMenuSelectSfx(void);
 extern void vs_battle_playMenuLeaveSfx(void);
 extern void vs_battle_playInvalidSfx(void);
 
+#ifndef WSWAP_CLASSIC
+#define WSWAP_CLASSIC 0 /* the classic branch sets this to 1 */
+#endif
+
 /* constant data (asm, see the header comment) */
 extern const u_char wl_lab[];        /* per overlay label id: x, y, bullet x, bullet y, width budget, slot */
 extern const u_char wl_slotBit[];    /* slot 0..7 -> bit number in the button words */
-extern const int wl_col[];           /* label colours, see wslot_label */
-extern const char wl_dash[];         /* "--" in the game encoding: the empty slot */
-extern const char wl_hint[];         /* "$SELECT: ASSIGN", followed by "$ASSIGN: PRESS A SLOT" */
+extern const u_char wl_pal[];        /* small-font palettes, see wslot_label */
+extern const u_char wl_hint[];       /* "SELECT: ASSIGN", followed by "ASSIGN: PRESS A SLOT" (game encoding) */
 /* wl_lab: positions of the game label sprites (tables at 0x800EBC98..0x800EBCDF in
  * BATTLE.PRG: bullets, labels, label widths) with the overlay fully slid in; the button
  * group (id 0..3) moves with +step, the D-pad group (id 4..7) with -step. Labels of odd
  * id end at x (the game draws them right-aligned against their button; here 2 px short).
- * The width budgets (pixels) keep neighbouring labels apart.
- * wl_col, as 0xBBGGRR: [0..2] empty / weapon / equipped, [3..5] the same in assign mode
- * (orange, equipped yellow), [6] hint, [7] assign prompt. */
+ * The width budgets (pixels, the small font is 6 px per character) keep neighbouring
+ * labels apart.
+ * wl_pal: palettes of the game's small font (VRAM clut row y=222, x = 832 + 16 * n):
+ * 4 white, 5 yellow, 6 red-orange, 7 dim slate. [0..1] = weapon / equipped, [2..3] the same
+ * in assign mode, [4] hint, [5] assign prompt. */
 __asm__(".section .wd1,\"a\",@progbits\n"
         ".globl wl_lab\nwl_lab:\n"
         ".byte 242,99,237,101,74,2, 214,113,213,115,54,3, 252,111,247,113,64,1, 223,125,223,127,100,4\n"
@@ -80,12 +95,13 @@ __asm__(".section .wd1,\"a\",@progbits\n"
         ".text");
 __asm__(".section .wd2,\"a\",@progbits\n"
         ".globl wl_slotBit\nwl_slotBit:\n.byte 5,4,7,6,12,14,13,15\n"
-        ".globl wl_dash\nwl_dash:\n.byte 0xA7,0xA7,0xE7,0\n"
-        ".globl wl_col\n.align 2\nwl_col:\n"
-        ".word 0x404040,0x808080,0xF0F080,0x105096,0x188CFF,0x40E0FF,0x6E6E6E,0x188CFF\n"
+        ".globl wl_pal\nwl_pal:\n.byte 4,5,6,5,7,6\n"
         ".text");
+/* game encoding: A..Z = 10..35, ':' = 0x9E, ' ' = 0x8F, terminator 0xE7 */
 __asm__(".section .wd3,\"a\",@progbits\n"
-        ".globl wl_hint\nwl_hint:\n.asciz \"$SELECT: ASSIGN\"\n.asciz \"$ASSIGN: PRESS A SLOT\"\n"
+        ".globl wl_hint\nwl_hint:\n"
+        ".byte 28,14,21,14,12,29,0x9E,0x8F,10,28,28,18,16,23,0xE7,0\n"
+        ".byte 10,28,28,18,16,23,0x9E,0x8F,25,27,14,28,28,0x8F,10,0x8F,28,21,24,29,0xE7\n"
         ".text");
 
 #define MSG_TICKS 150   /* how long the name stays up (1/60 s units, like the game's) */
@@ -98,10 +114,19 @@ __asm__(".section .wd3,\"a\",@progbits\n"
  * unreferenced functions (see tools/mod/wswap.ld) */
 #define PLACE(sec) __asm__(".section " sec ",\"ax\",@progbits")
 #define UNPLACE() __asm__(".text")
+/* .wZ: func_800D9910 (604 bytes), only used by the default variant */
+#if WSWAP_CLASSIC
+#define PLACE_Z() UNPLACE()
+#else
+#define PLACE_Z() PLACE(".wZ")
+#endif
 
 /* mod state, lives in the blob's own zero-initialised data */
+#if !WSWAP_CLASSIC
 static int s_prev;    /* real buttons state of the previous frame */
 static int s_cam;     /* camera stick latch: -1, 0, 1 */
+static int s_r3;      /* real R3 button (PADj position) of the previous frame */
+#endif
 static int s_loading; /* swap state machine: 0 idle, 1 waiting for the load queue, 2 sheathing */
 #if WSWAP_ANIM
 static int s_redraw;  /* draw the weapon again when the swap is done */
@@ -114,6 +139,7 @@ static int s_assign;  /* 1: the next slot button assigns the equipped weapon */
 static int s_raw;     /* physical D-pad bits (12..15) of the previous frame */
 
 /* index of the equipped weapon slot, or -1 */
+PLACE_Z();
 static int equippedSlot(void)
 {
     vs_main_inventoryWeapon* w = vs_main_inventory.weapons;
@@ -127,6 +153,7 @@ static int equippedSlot(void)
     }
     return cur;
 }
+UNPLACE();
 
 /* Same sequence as the equip menu (MENU3.PRG _equipWeaponMenu + _loadObjectData),
  * applied to the real actor 0. The load queue is processed by the main loop. */
@@ -257,7 +284,7 @@ static void migrate(void)
 /* Put the equipped weapon into slot n; the weapon sitting there loses it. If the
  * equipped weapon already is in slot n, the slot is cleared. n == 0: its own slot
  * (clear) or else the first free one. Returns 1 when something changed. */
-PLACE(".wC");
+PLACE(".wD");
 static int assign(int n)
 {
     vs_main_inventoryWeapon* w = vs_main_inventory.weapons;
@@ -295,7 +322,9 @@ static int assign(int n)
 }
 UNPLACE();
 
+#if !WSWAP_CLASSIC
 /* the next assigned weapon after slot cur (0..9) in direction dir, not the equipped one */
+PLACE_Z();
 static vs_main_inventoryWeapon* nextSlot(int cur, int dir)
 {
     vs_main_inventoryWeapon* p;
@@ -309,42 +338,41 @@ static vs_main_inventoryWeapon* nextSlot(int cur, int dir)
     }
     return NULL;
 }
+UNPLACE();
+#endif
 
-/* game encoding -> upper case ASCII, as many characters as fit into maxpx pixels */
-PLACE(".wD");
-static void nameToAscii(char* out, char const* name, int maxpx)
+/* Text in the game's small font (the menu item font: font table 0, 6 px per character, the
+ * glyph cells are in VRAM whenever the field runs). s is in the game encoding, as many
+ * characters as fit into budget pixels are drawn. flags: bits 0-1 alignment of x (0 left,
+ * 1 centre, 2 right: the text ends at x), bits 2.. the font palette. A space is not drawn
+ * at all (the font routine just advances), which the raw-text font gets wrong in the field.
+ * The sprites are linked at vs_scratch.unk8, like vs_battle_renderTextRaw does. */
+PLACE(".wC");
+static void drawSmall(u_char const* s, int xy, int budget, int flags)
 {
-    int i;
+    u_char const* e = s;
+    int wd = 0;
+    int x = (short)xy;
     int c;
-    int n = 0;
 
-    for (i = 0; i < 24; ++i) {
-        c = (u_char)name[i];
-        if (c < 10) {
-            c += '0';
-        } else if (c < 0x24) {
-            c += 'A' - 10;
-        } else if (c < 0x3E) {
-            c += 'A' - 0x24;
-        } else if (c == 0xA7) {
-            c = '-';
-        } else if (c == 0xA0) {
-            c = '.';
-        } else if (c == 0xE7) {
-            break;
-        } else {
-            c = ' ';
-        }
-        maxpx -= (D_800EB7B4[(c - 0x20) >> 1] >> (((c - 0x20) << 2) & 4)) & 0xF;
-        if (maxpx < 0) {
+    while ((e - s < 24) && ((c = *e) < 0xAE)) {
+        c = vs_battle_characterWidths[c];
+        if (wd + c > budget) {
             break;
         }
-        out[n++] = c;
+        wd += c;
+        ++e;
     }
-    while ((n > 0) && (out[n - 1] == ' ')) {
-        --n;
+    while ((e > s) && (e[-1] == 0x8F)) {
+        --e;
+        wd -= 6;
     }
-    out[n] = 0;
+    x -= (wd * (flags & 3)) >> 1;
+    vs_battle_setFontStyle(flags >> 2);
+    for (; s != e; ++s) {
+        x = vs_battle_printVariableWidthFontChar(
+            *s, x, (xy >> 16) - 1, (u_long*)((char*)vs_scratch.unk8 - 12));
+    }
 }
 UNPLACE();
 
@@ -352,8 +380,7 @@ UNPLACE();
 PLACE(".wH");
 static void drawHint(void)
 {
-    vs_battle_renderTextRawColor(
-        wl_hint + s_assign * 16, 160 | (142 << 16), wl_col[6 + s_assign], NULL);
+    drawSmall(wl_hint + s_assign * 16, 160 | (142 << 16), 320, 1 | (wl_pal[4 + s_assign] << 2));
 }
 UNPLACE();
 
@@ -364,12 +391,9 @@ UNPLACE();
 PLACE(".wA");
 int wslot_label(int id)
 {
-    char buf[32];
-    char* p = buf;
     vs_main_inventoryWeapon* w;
     u_char const* t;
     int step;
-    int ci;
 
     if (!s_wmode) {
         return func_800C9EB8(id);
@@ -381,16 +405,11 @@ int wslot_label(int id)
         step = -step;
     }
     func_800C9F98(((t[2] + step) & 0xFFFF) | (t[3] << 16), w ? 0x180 : 0x140);
-    if (id & 1) {
-        *p++ = '#'; /* right aligned: the label ends at x */
+    if (w) { /* an empty slot shows the bullet only */
+        /* odd id: right aligned, the label ends at x */
+        drawSmall((u_char*)w->name, ((t[0] + step) & 0xFFFF) | (t[1] << 16), t[4],
+            ((id & 1) << 1) | (wl_pal[s_assign * 2 + (w->isEquipped & 1)] << 2));
     }
-    nameToAscii(p, w ? w->name : wl_dash, t[4]);
-    ci = s_assign * 3;
-    if (w) {
-        ci += 1 + (w->isEquipped & 1);
-    }
-    vs_battle_renderTextRawColor(
-        buf, ((t[0] + step) & 0xFFFF) | (t[1] << 16), wl_col[ci], NULL);
     if ((id == 4) && (D_800EBCE8 == 0)) {
         drawHint();
     }
@@ -444,6 +463,31 @@ static void slotMode(int rawNew)
     startSwap(t);
 }
 UNPLACE();
+
+#if !WSWAP_CLASSIC
+/* First-person view (func_8006EC7C, called from vs_battle_exec at 0x8007A10C in game mode 7):
+ * the right stick looks around as well, at the speed of the left stick, up/down inverted like
+ * the edited left stick/D-pad code of the original. The original then clamps the pitch. */
+PLACE_Z();
+void wfp_look(void)
+{
+    int dx = vs_main_stickPosBuf.lStickX - 128; /* decomp lStick = physical right stick */
+    int dy = vs_main_stickPosBuf.lStickY - 128;
+
+    if ((u_int)(dx + 64) > 128) {
+        dx += (dx > 0) ? -64 : 64;
+        vs_battle_cameraCurrentSpherical.values.yaw =
+            (vs_battle_cameraCurrentSpherical.values.yaw + dx / 3) & 0xFFF;
+    }
+    if ((u_int)(dy + 64) > 128) {
+        dy += (dy > 0) ? -64 : 64;
+        vs_battle_cameraCurrentSpherical.values.pitch -= dy / 3;
+    }
+    func_8006EC7C();
+}
+UNPLACE();
+#endif
+
 int wswap_entry(void)
 {
     int ret;
@@ -460,14 +504,33 @@ int wswap_entry(void)
     D_800F4538_t* a;
     vs_battle_textBox* box;
 
+#if !WSWAP_CLASSIC
     vs_main_buttonsPreviousState = s_prev;
+#endif
     ret = vs_main_processPadState();
+#if !WSWAP_CLASSIC
     s_prev = vs_main_buttonsState;
+#endif
 
     /* physical D-pad: the pad driver ORs the left stick into the D-pad bits (analog mode) */
     mask = ((~vs_main_padBuffer[0][2] & 0xF0) << 8) & vs_main_buttonsState;
     rawNew = mask & ~s_raw;
     s_raw = mask;
+
+#if !WSWAP_CLASSIC
+    /* PADj (R3): the pad driver also sets it when the right stick is pushed far in any direction
+     * (first person view by accident). In the field only the real R3 button counts, taken from
+     * the raw pad word (byte 2, bit 2, active low), with its own press edge. */
+    dx = (~vs_main_padBuffer[0][2] & 4) << 8;
+    if ((vs_battle_menuState.currentMenu & 0x3F) == 0x3F) {
+        pressed = dx & ~s_r3;
+        vs_main_buttonsState = (vs_main_buttonsState & ~PADj) | dx;
+        vs_main_buttonsPressed.all = (vs_main_buttonsPressed.all & ~PADj) | pressed;
+        vs_main_buttonRepeat = (vs_main_buttonRepeat & ~PADj) | pressed;
+        vs_main_buttonsPreviousState = (vs_main_buttonsPreviousState & ~PADj) | dx;
+    }
+    s_r3 = dx;
+#endif
 
     /* weapon name box: ours only while box 7 still points at an inventory name */
     if (s_msg) {
@@ -553,6 +616,19 @@ int wswap_entry(void)
         }
         return ret;
     }
+#if WSWAP_CLASSIC
+    /* classic: R2 + Select is the only extra input outside the overlay; L1/R1, the sticks and
+     * everything else stay exactly as the game handles them */
+    if ((mode == 1) && (vs_main_buttonsState & PADR2)
+        && (vs_main_buttonsPressed.all & PADselect)) {
+        if (equippedSlot() >= 0) {
+            assign(0);
+        }
+        vs_main_buttonsPressed.all &= ~PADselect;
+        vs_main_buttonRepeat &= ~PADselect;
+    }
+    return ret;
+#else
     if ((u_int)(mode - 1) >= 3) {
         return ret;
     }
@@ -570,7 +646,6 @@ int wswap_entry(void)
     mask = PADL1 | PADR1;
     synth = 0;
     if (s_cam) {
-        mask |= PADj;
         synth = (s_cam > 0) ? PADL1 : PADR1;
     }
 
@@ -602,7 +677,8 @@ int wswap_entry(void)
     vs_main_buttonsPressed.all &= ~mask;
     vs_main_buttonRepeat &= ~mask;
     vs_main_buttonsState &= ~mask;
-    vs_main_buttonsPreviousState = (s_prev & ~mask) | synth;
+    vs_main_buttonsPreviousState = (vs_main_buttonsPreviousState & ~mask) | synth;
 
     return ret;
+#endif
 }

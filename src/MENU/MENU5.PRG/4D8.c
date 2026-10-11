@@ -724,16 +724,18 @@ static int _menuManager(void)
                         || (rstickY = vs_main_stickPosBuf.rStickY - 128,
                             ABS(rstickY) > 64)) {
 
+                        // mod: map panning inverted on both axes (stick: the signs of
+                        // the steps are flipped, D-pad below: the masks are swapped)
                         if (rstickX < -64) {
-                            _geomOffsetX -= 4;
-                        } else if (rstickX > 64) {
                             _geomOffsetX += 4;
+                        } else if (rstickX > 64) {
+                            _geomOffsetX -= 4;
                         }
 
                         if ((vs_main_stickPosBuf.rStickY - 128) < -64) {
-                            _geomOffsetY -= 4;
-                        } else if ((vs_main_stickPosBuf.rStickY - 128) > 64) {
                             _geomOffsetY += 4;
+                        } else if ((vs_main_stickPosBuf.rStickY - 128) > 64) {
+                            _geomOffsetY -= 4;
                         }
 
                         if (_geomOffsetY < -80) {
@@ -749,18 +751,18 @@ static int _menuManager(void)
                         }
 
                     } else {
-                        if ((vs_main_buttonsPreviousState & PADLup)
+                        if ((vs_main_buttonsPreviousState & PADLdown)
                             && (_geomOffsetY > -80)) {
                             _geomOffsetY -= 4;
-                        } else if ((vs_main_buttonsPreviousState & PADLdown)
+                        } else if ((vs_main_buttonsPreviousState & PADLup)
                                    && (_geomOffsetY < 80)) {
                             _geomOffsetY += 4;
                         }
 
-                        if ((vs_main_buttonsPreviousState & PADLleft)
+                        if ((vs_main_buttonsPreviousState & PADLright)
                             && (_geomOffsetX > -96)) {
                             _geomOffsetX -= 4;
-                        } else if ((vs_main_buttonsPreviousState & PADLright)
+                        } else if ((vs_main_buttonsPreviousState & PADLleft)
                                    && (_geomOffsetX < 96)) {
                             _geomOffsetX += 4;
                         }
