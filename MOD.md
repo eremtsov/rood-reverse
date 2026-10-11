@@ -112,6 +112,35 @@ The patch only changes game code, so saves from the unmodded game work. Keep a b
 of your memory card anyway. The mod has been tested in DuckStation only, not on real
 hardware.
 
+## Zenith 1.94 edition
+
+[Vagrant Story: Zenith](https://vszenith.wordpress.com/) is a large fan mod of its own. The
+QoL mod is also available on top of **Zenith 1.94**, in both variants, with the same
+features as v3.1. It is a separate patch that applies to a Zenith 1.94 image, not to the
+original disc. It isn't affiliated with the Zenith project.
+
+| File | SHA-1 |
+|---|---|
+| Original `.bin` | `38c63db6c49a06b91d87cd5a4e31b1ec68fe212c` |
+| After Zenith's `zenith_194.ppf` | `02b764a6a2015af31dc75bfe1330c5e161f48dd1` |
+| + `QoL mod v3.1 for Zenith 1.94.xdelta` (default) | `78ba22188a68c3e9f7f8f3469cc3688e678becc6` |
+| + `QoL mod v3.1 (classic buttons) for Zenith 1.94.xdelta` | `8c729fa2067a4e8b3fb32a554d5ed907abc71b2a` |
+
+1. Patch your original `.bin` with Zenith 1.94's PPF (from the Zenith site) and check
+   that the result matches the SHA-1 above. Other Zenith versions won't work.
+2. Apply the Zenith xdelta for your variant to that image, then fix the `.cue` as above.
+
+How it differs from the normal build:
+- **Code location.** Zenith uses the free space at the end of BATTLE.PRG for its own
+  code, so this edition places the mod's code in other unused functions of BATTLE.PRG
+  and `SLUS_010.40`. Each range is checked against every executable on the disc, both
+  vanilla and Zenith, by `tools/mod/check_refs_disc.py`.
+- **Zenith's own code.** Zenith moved one menu's Circle check into its own code; the
+  default variant applies its Cross/Circle swap there. Nothing else of Zenith's is
+  changed.
+- **Source.** The code is on the `qol-mod-zenith` and `qol-mod-classic-zenith` branches.
+  `tools/mod/build_zenith.sh` builds it.
+
 ## Building from source
 
 1. Set up rood-reverse as described in [README.md](README.md): Ubuntu/WSL, the listed
