@@ -21,6 +21,11 @@ ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')
 PRG_BASE = 0x80068800
 # the variant under test: src/mod/wswap.c has `#define WSWAP_CLASSIC 1` on the classic branch
 CLASSIC = bool(re.search(r'^#define WSWAP_CLASSIC 1', open(os.path.join(ROOT, 'src/mod/wswap.c')).read(), re.M))
+# the Zenith edition (src/mod/wswap.c: #define WSWAP_ZENITH 1): the blob lives in unreferenced functions of BATTLE.PRG and SLUS_010.40
+# (tools/mod/wswap-zenith.ld), build/data/BATTLE/BATTLE.PRG and build/data/SLUS_010.40 are the patched files of the combined
+# image, build/mod/BATTLE.PRG.pristine is Zenith's BATTLE.PRG, build/mod/zenith_allowed.txt lists every range the mod may write
+ZENITH = bool(re.search(r'^#define WSWAP_ZENITH 1', open(os.path.join(ROOT, 'src/mod/wswap.c')).read(), re.M))
+LEAN = ZENITH and not CLASSIC   # ZEN_LEAN in src/mod/wswap.c: no Start function, migrate() clears garbage only, short hint
 
 # ---- symbols ---------------------------------------------------------------
 SYM = {}
@@ -78,6 +83,8 @@ UNK48 = 0x80132000
 PRG = open(os.path.join(ROOT, 'build/data/BATTLE/BATTLE.PRG'), 'rb').read()
 PRG_ORIG = open(os.path.join(ROOT, 'build/mod/BATTLE.PRG.pristine'), 'rb').read()
 assert len(PRG) == 579584 and len(PRG_ORIG) <= len(PRG)
+SLUS = open(os.path.join(ROOT, 'build/data/SLUS_010.40'), 'rb').read() if ZENITH else b''
+SLUS_BASE = 0x8000F800
 PRG_ORIG = PRG_ORIG + bytes(len(PRG) - len(PRG_ORIG))   # the shipped file is sector-rounded
 
 # v2 layout additions (src/mod/test_offsets.c)
@@ -141,6 +148,7 @@ class Machine:
     # world ----------------------------------------------------------------
     def reset_world(self):
         self.mem[:] = bytes(len(self.mem))
+        self.w(SLUS_BASE, SLUS)
         self.w(PRG_BASE, PRG)
         self.wr(MODE, 1)
         self.wr(MENU, 0x3F, 1)
@@ -1231,7 +1239,7 @@ def test_fuzz(seed=1, frames=12000):
         if not loading and (m.rd(MENU, 1) & 0x3F) == 0x3F and not m.rd(s_loading):
             vals = [m.weapon(x)['fav'] for x in range(8) if m.weapon(x)['blade']]
             vals = [v for v in vals if v]
-            check(len(vals) == len(set(vals)) and all(1 <= v <= 8 for v in vals),
+            check((LEAN or len(vals) == len(set(vals))) and all(1 <= v <= 8 for v in vals),
                   'fuzz: slots not unique / out of range %s' % vals)
         ev = [e[0] for e in m.log]
         check(ev.count('initInfo') == ev.count('setText') <= 1, 'fuzz: name box calls unbalanced %s' % ev)
@@ -1319,7 +1327,7 @@ def enc_raw(text):
     return bytes(out) + b'\xE7'
 
 
-HINT, HINT_ASSIGN = enc_raw('SELECT: ASSIGN  START: SHIELD'), enc_raw('ASSIGN: PRESS A SLOT')
+HINT, HINT_ASSIGN = enc_raw('SELECT: ASSIGN' if LEAN else 'SELECT: ASSIGN  START: SHIELD'), enc_raw('ASSIGN: PRESS A SLOT')
 
 
 def enc(text, space=(0xFA, 6)):
@@ -1908,7 +1916,35 @@ def test_quick_assign():
     check(slots_of(m)[7] == 8, 'last free slot')
 
 
+def test_migration_lean():
+    # the lean migrate() clears garbage (> 8) only: valid slot numbers, also duplicates, stay as they are
+    for vals, want in (([1, 0, 1, 0, 1, 1, 0, 0], [1, 0, 1, 0, 1, 1, 0, 0]), ([9, 1, 0x7F, 8, 0xFF, 1, 2, 3], [0, 1, 0, 8, 0, 1, 2, 3]),
+                       ([0] * 8, [0] * 8), ([3, 3, 3, 1, 0, 0, 0, 0], [3, 3, 3, 1, 0, 0, 0, 0])):
+        m = Machine()
+        m.setup_weapons(set(), -1, slots=dict(enumerate(vals)))
+        m.frame(0)
+        check(slots_of(m) == want, 'lean migrate %s -> %s (got %s)' % (vals, want, slots_of(m)))
+        m.frame(0)
+        check(slots_of(m) == want, 'idempotent')
+    for x in range(256):
+        m = Machine()
+        m.setup_weapons(set(), -1, slots={0: x})
+        m.frame(0)
+        check(slots_of(m)[0] == (x if x <= 8 else 0), 'slot value %d' % x)
+    m = Machine()
+    m.setup_weapons(set(), -1, slots={0: 9, 1: 2})
+    m.wr(MENU, 1)
+    m.frame(0)
+    check(slots_of(m)[:2] == [9, 2], 'menu open: not touched')
+    m.wr(MENU, 0x3F)
+    m.frame(0)
+    check(slots_of(m)[:2] == [0, 2], 'menu closed: garbage cleared')
+
+
 def test_migration():
+    if LEAN:
+        return test_migration_lean()
+
     def run_with(vals, blades=None):
         m = Machine()
         m.setup_weapons(set(), -1, slots={i: v for i, v in enumerate(vals)})
@@ -2080,6 +2116,17 @@ def test_code_budget():
         check(now == jal_fp(0x8006EC7C), 'classic: the first-person call is the original')
     else:
         check(now == jal_fp(SYMS_BLOB['wfp_look']), 'default: the first-person call goes to wfp_look')
+    if ZENITH:
+        allowed = []
+        slus_allowed = []
+        for l in open(os.path.join(ROOT, 'build/mod/zenith_allowed.txt')):
+            f, a, n = l.split()
+            (allowed if f == 'BATTLE' else slus_allowed).append((int(a, 16), int(n)))
+        slus_orig = open(os.path.join(ROOT, 'build/mod/SLUS_010.40.zenith'), 'rb').read()
+        schanged = [i for i in range(len(SLUS)) if SLUS[i] != slus_orig[i]]
+        sstray = [i for i in schanged if not any(a - SLUS_BASE <= i < a - SLUS_BASE + n for a, n in slus_allowed)]
+        check(not sstray, 'SLUS_010.40 bytes changed outside the allowed ranges: %s' % [hex(i + SLUS_BASE) for i in sstray[:8]])
+        print('SLUS_010.40 bytes changed: %d in %d ranges' % (len(schanged), len(slus_allowed)))
     stray = [i for i in changed if not any(a - PRG_BASE <= i < a - PRG_BASE + n for a, n in allowed)]
     check(not stray, 'bytes changed outside the allowed ranges: %s' % [hex(i + PRG_BASE) for i in stray[:8]])
     print('changed byte clusters: %s' % ', '.join('%08X+%d' % (a + PRG_BASE, b - a) for a, b in ranges))
@@ -2602,7 +2649,38 @@ def test_shield_swap():
           'm: call sequence with a shield: %s' % names)
 
 
+def test_shield_start_lean():
+    """lean build: Start in the overlay does nothing but is swallowed (no first person view)"""
+    SFX = ('sfxdef', 0x7E, 0x18)
+    m = swap_machine({0: 1, 1: 2, 2: 3, 4: 5}, {2: 3}, 0, {3: dict(eq=1), 5: dict(mask=0x0F), 6: dict(mask=0x80)}, sentinel=False)
+    before = masks(m)
+    m.log.clear()
+    log, pressed = press(m, START)
+    check(masks(m) == before and SFX not in log and not any(e[0] == 'sfx' for e in log), 'lean: Start writes nothing and plays nothing: %s' % log)
+    check(pressed & START == 0 and m.rd(REPEAT) & START == 0, 'lean: Start swallowed')
+    check(m.rd(MODE) == 6 and m.equipped() == [0] and slots_of(m)[:5] == [1, 2, 3, 0, 5], 'lean: no other effect')
+    m = swap_machine({0: 1, 1: 2}, {}, 0, {3: dict(eq=1)}, sentinel=False)
+    m.frame(L2 | R2 | SELECT)
+    m.frame(L2 | R2)
+    press(m, START)
+    check(m.rd(S_ASSIGN) == 1 and masks(m)[3] == 0, 'lean: Start in assign mode: mode unchanged, nothing written')
+    for desc, setup, hw in (('mode 1, no L2/R2', lambda mm: mm.wr(MODE, 1), 0), ('L2 only (native shortcuts)', lambda mm: None, L2), ('menu open', lambda mm: mm.wr(MENU, 0), L2 | R2)):
+        m = swap_machine({0: 1, 1: 2}, {}, 0, {3: dict(eq=1)}, sentinel=False)
+        setup(m)
+        m.frame(hw)
+        m.frame(hw | START)
+        check(m.rd(PRESSED) & START, 'Start outside the overlay (%s): untouched' % desc)
+    m = swap_machine({0: 1}, {}, 0, {}, sentinel=False)
+    m.wr(D_ANIM, 0, 1)
+    m.log.clear()
+    m.call(LABEL, 4)
+    want = ref_small(m, HINT, 30, 1, 160, 142, PAL[4])
+    check(m.log[-len(want):] == want, 'hint line: SELECT: ASSIGN')
+
+
 def test_shield_start():
+    if LEAN:
+        return test_shield_start_lean()
     """Start in the weapon overlay: the equipped shield goes into every occupied one-handed slot"""
     SFX = ('sfxdef', 0x7E, 0x18)
     # a) shield 3 on; slots 1, 2, 5 one-handed, slot 3 two-handed, slot 4 and 6..8 have no weapon
@@ -2673,7 +2751,7 @@ def test_no_shield_migration():
     m.setup_weapons(set(), 0, slots={0: 1, 2: 1, 3: 1})
     set_shield(m, 1, eq=1)
     m.frame(0)
-    check(slots_of(m)[:4] == [1, 0, 2, 3] and masks(m) == [0] * 8, 'v2 favourites: slots only')
+    check(slots_of(m)[:4] == ([1, 0, 1, 1] if LEAN else [1, 0, 2, 3]) and masks(m) == [0] * 8, 'v2 favourites: slots only')
 
 
 def test_shield_loadout():
