@@ -846,6 +846,7 @@ def test_lr_camera():
         m.shim_r1 = False
         m.wr(MODE, mode)
         m.wr(MENU, menu, 1)
+        m.mode10_left = 1000    # (the model's main loop would end game mode 10 by itself)
         m.frame(0)
         m.frame(L1)
         check(m.rd(PRESSED) & (L1 | R1) == L1 and m.rd(STATE) & (L1 | R1) == L1 and m.rd(PREV) & (L1 | R1) == L1,
