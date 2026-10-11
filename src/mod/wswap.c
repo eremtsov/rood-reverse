@@ -84,6 +84,21 @@ extern void vs_battle_playInvalidSfx(void);
 #define WSWAP_CLASSIC 1 /* classic: the overlay and R2+Select only (set by the branch) */
 #endif
 
+/* Zenith edition (WSWAP_ZENITH 1): the same mod on top of the "Vagrant Story: Zenith" rebalance, which fills the
+ * zero tail of BATTLE.PRG (code caves at 0x800F5924..0x800F5EF6, its variables from 0x800F5F00 on) and replaces
+ * func_8007FF8C. Nothing of the mod may live there, and the 1.7 KB that used to be in the tail have to go
+ * somewhere else, so every function and table gets a section of its own (.z_<name>); tools/mod/zenith_pack.py
+ * packs them into the unreferenced functions listed in tools/mod/wswap-zenith.ld. For that wswap_entry is split
+ * into five functions (entryPad, entryMsg, entryLoad, entryMode, entryCam); the behaviour is the same. */
+#ifndef WSWAP_ZENITH
+#define WSWAP_ZENITH 1 /* the zenith branches set this to 1 */
+#endif
+/* The default variant does not fit the unreferenced code that is left on top of Zenith: there "Start in the overlay writes
+ * the equipped shield into all one-handed slots" (shieldAll) is dropped (Start is still swallowed) and migrate() only clears
+ * garbage (> 8) instead of also moving duplicate slot numbers to the lowest free slot (there are no v2 saves in a Zenith run;
+ * assign() keeps the numbers distinct). */
+#define ZEN_LEAN (WSWAP_ZENITH && !WSWAP_CLASSIC)
+
 /* The classic variant is small enough to keep swapAllowed, startSwap, drawHint and the hint strings
  * in the tail of BATTLE.PRG: the unreferenced functions .wE, .wF and .wH stay untouched there. */
 #if WSWAP_CLASSIC
@@ -92,6 +107,18 @@ extern void vs_battle_playInvalidSfx(void);
 #else
 #define PLACE_T(sec) __asm__(".section " sec ",\"ax\",@progbits")
 #define SEC_WD3 ".wd3"
+#endif
+#define SEC_WD1 ".wd1"
+#define SEC_WD2 ".wd2"
+#if WSWAP_ZENITH
+#undef PLACE_T
+#undef SEC_WD1
+#undef SEC_WD2
+#undef SEC_WD3
+#define PLACE_T(sec) __asm__(".section " sec ",\"ax\",@progbits")
+#define SEC_WD1 ".z_lab"
+#define SEC_WD2 ".z_pal"
+#define SEC_WD3 ".z_hint"
 #endif
 
 /* constant data (asm, see the header comment) */
@@ -115,19 +142,23 @@ extern void vs_main_playSfxDefault(int, int);
  * wl_pal: palettes of the game's small font (VRAM clut row y=222, x = 832 + 16 * n):
  * 4 white, 5 yellow, 6 red-orange, 7 dim slate. [0..1] = weapon / equipped, [2..3] the same
  * in assign mode, [4] hint, [5] assign prompt. */
-__asm__(".section .wd1,\"a\",@progbits\n"
+__asm__(".section " SEC_WD1 ",\"a\",@progbits\n"
         ".globl wl_lab\nwl_lab:\n"
         ".byte 242,99,237,101,12,2, 214,108,213,115,17,3, 252,111,247,113,10,1, 223,126,223,127,19,4\n"
         ".byte 94,99,89,101,21,5, 71,112,70,115,11,8, 103,117,98,113,17,7, 81,124,80,127,12,6\n"
         ".text");
-__asm__(".section .wd2,\"a\",@progbits\n"
+__asm__(".section " SEC_WD2 ",\"a\",@progbits\n"
         ".globl wl_slotBit\nwl_slotBit:\n.byte 5,4,7,6,12,14,13,15\n"
         ".globl wl_pal\nwl_pal:\n.byte 4,5,6,5,7,6\n"
         ".text");
 /* game encoding: A..Z = 10..35, ':' = 0x9E, ' ' = 0x8F, terminator 0xE7 */
 __asm__(".section " SEC_WD3 ",\"a\",@progbits\n"
         ".globl wl_hint\nwl_hint:\n"
+#if ZEN_LEAN /* "SELECT: ASSIGN" (no Start function), padded to 32 bytes */
+        ".byte 28,14,21,14,12,29,0x9E,0x8F,10,28,28,18,16,23,0xE7\n.space 17\n"
+#else
         ".byte 28,14,21,14,12,29,0x9E,0x8F,10,28,28,18,16,23,0x8F,0x8F,28,29,10,27,29,0x9E,0x8F,28,17,18,14,21,13,0xE7,0,0\n"
+#endif
         ".byte 10,28,28,18,16,23,0x9E,0x8F,25,27,14,28,28,0x8F,10,0x8F,28,21,24,29,0xE7\n"
         ".text");
 
@@ -155,6 +186,32 @@ __asm__(".section " SEC_WD3 ",\"a\",@progbits\n"
 #define PLACE_INSLOT() PLACE(".wX1")
 #define PLACE_EQSLOT() PLACE(".wX2")
 #define PLACE_TWOH() PLACE(".wX3")
+#if WSWAP_ZENITH
+/* one section per function: .z_<name>; the function ranges they are packed into: tools/mod/wswap-zenith.ld */
+#undef PLACE_BEGIN
+#undef PLACE_LABEL
+#undef PLACE_SHIELDALL
+#undef PLACE_SHIELD
+#undef PLACE_START
+#undef PLACE_BIND
+#undef PLACE_INSLOT
+#undef PLACE_EQSLOT
+#undef PLACE_TWOH
+#define PLACE_BEGIN() PLACE(".z_beginSwap")
+#define PLACE_LABEL() PLACE(".z_wslot_label")
+#define PLACE_SHIELDALL() PLACE(".z_shieldAll")
+#define PLACE_SHIELD() PLACE(".z_shieldSwap")
+#define PLACE_START() PLACE(".z_startSwap")
+#define PLACE_BIND() PLACE(".z_shieldBind")
+#define PLACE_INSLOT() PLACE(".z_inSlot")
+#define PLACE_EQSLOT() PLACE(".z_equippedSlot")
+#define PLACE_TWOH() PLACE(".z_twoHanded")
+#define PLACE_Z(name, old) PLACE(".z_" #name)
+#define PLACE_ZN(name) PLACE(".z_" #name);
+#else
+#define PLACE_Z(name, old) old
+#define PLACE_ZN(name)
+#endif
 
 /* mod state, lives in the blob's own zero-initialised data */
 #if !WSWAP_CLASSIC
@@ -181,6 +238,19 @@ static vs_main_inventoryWeapon* inSlot(int n);
 /* Every weapon must have its own slot. Version 2 marked any number of favourites
  * with 1: the first keeps slot 1, the others get the lowest free slots in inventory
  * order. Values above 8 are garbage. Idempotent, runs every field frame. */
+#if ZEN_LEAN
+static void migrate(void)
+{
+    vs_main_inventoryWeapon* w = vs_main_inventory.weapons;
+    int i;
+
+    for (i = 0; i < 8; ++i, ++w) {
+        if (w->gems[3] > 8) {
+            w->gems[3] = 0; /* garbage */
+        }
+    }
+}
+#else
 static void migrate(void)
 {
     vs_main_inventoryWeapon* w = vs_main_inventory.weapons;
@@ -199,6 +269,7 @@ static void migrate(void)
         }
     }
 }
+#endif
 
 /* Per-slot shields ("exact loadout"). The shield of a weapon slot is recorded in the 4th gem byte of the
  * shield record (vs_main_inventoryShield.gems[3]) as a bit mask: bit N set = this shield belongs to slot N+1.
@@ -234,6 +305,7 @@ static void shieldBind(int n, int with)
 }
 UNPLACE();
 
+#if !ZEN_LEAN
 /* Start in the weapon overlay: the equipped shield becomes the shield of every occupied one-handed slot (its bits
  * are set on the equipped shield and cleared on all others); without an equipped shield those slots end up
  * without a shield. Two-handed and empty slots stay as they are. Nothing else ever writes shield bits besides
@@ -252,6 +324,7 @@ static void shieldAll(void)
     vs_main_playSfxDefault(0x7E, 0x18); /* the "confirm" of the workshop (not the assign / clear sounds) */
 }
 UNPLACE();
+#endif
 
 /* The shield side of a swap to weapon w (two: it is two-handed): the shield becomes the one of its slot, none
  * for a two-handed weapon or a slot without a (still existing) shield. Same steps as the equip menu
@@ -349,7 +422,32 @@ static void beginSwap(vs_main_inventoryWeapon* w)
 UNPLACE();
 
 /* the same safety conditions the swap has always had */
-PLACE_T(".wE");
+#if WSWAP_ZENITH
+/* the same condition in three parts (each fits a small unreferenced function) */
+PLACE_ZN(swapAllowed3)
+static int swapAllowed3(void)
+{
+    return (func_8009E4B0(0) == 0) && (vs_battle_objectDataSlots[0].dataType == 0);
+}
+UNPLACE();
+
+PLACE_ZN(swapAllowed2)
+static int swapAllowed2(void)
+{
+    return !(func_800A0BE0(0) & 0x6000)
+        && (vs_battle_characterState->unk3C->unk954 == 0) && swapAllowed3();
+}
+UNPLACE();
+
+PLACE_ZN(swapAllowed)
+static int swapAllowed(void)
+{
+    return ((vs_battle_screenTransitionStep - 1) >= 2U)
+        && (vs_battle_screenTransitionStep != 4) && swapAllowed2();
+}
+UNPLACE();
+#else
+PLACE_Z(swapAllowed, PLACE_T(".wE"));
 static int swapAllowed(void)
 {
     return ((vs_battle_screenTransitionStep - 1) >= 2U)
@@ -358,6 +456,7 @@ static int swapAllowed(void)
         && (vs_battle_objectDataSlots[0].dataType == 0);
 }
 UNPLACE();
+#endif
 
 /* sound, then sheathe first when the weapon is drawn, else swap at once */
 PLACE_START();
@@ -417,6 +516,7 @@ UNPLACE();
 /* Put the equipped weapon into slot n; the weapon sitting there loses it. If the
  * equipped weapon already is in slot n, the slot is cleared. n == 0: its own slot
  * (clear) or else the first free one. Returns 1 when something changed. */
+PLACE_ZN(assign)
 static int assign(int n)
 {
     vs_main_inventoryWeapon* w = vs_main_inventory.weapons;
@@ -460,7 +560,7 @@ UNPLACE();
 #if !WSWAP_CLASSIC
 /* L1 and R1 exchanged (bits 2 and 3 of the button words): the camera of the field reads them from
  * vs_main_buttonsPreviousState, physical L1 turns it like the game's R1 and the other way round */
-PLACE(".wE");
+PLACE_Z(swapLR, PLACE(".wE"));
 static int swapLR(int v)
 {
     return (v & ~(PADL1 | PADR1)) | ((v & PADL1) << 1) | ((v & PADR1) >> 1);
@@ -478,7 +578,7 @@ UNPLACE();
  * 0x8F (the font routine draws nothing for it and advances 6 px), which the raw-text font gets wrong
  * in the field. Trailing blanks are dropped. The sprites are linked at vs_scratch.unk8, like
  * vs_battle_renderTextRaw does. */
-PLACE(".wC");
+PLACE_Z(drawSmall, PLACE(".wC"));
 static void drawSmall(u_char const* s, int xy, int max, int flags)
 {
     u_char const* e = s;
@@ -510,7 +610,7 @@ static void drawSmall(u_char const* s, int xy, int max, int flags)
 UNPLACE();
 
 /* the line under the overlay: what Select does */
-PLACE_T(".wH");
+PLACE_Z(drawHint, PLACE_T(".wH"));
 static void drawHint(void)
 {
     drawSmall(wl_hint + s_assign * 32, 160 | (142 << 16), 30, 3 | (wl_pal[4 + s_assign] << 3));
@@ -553,18 +653,46 @@ UNPLACE();
 /* L2+R2 held in the shortcut mode (6): Select toggles the assign mode, a slot button
  * assigns or equips. rawNew: D-pad buttons that went down this frame (physical only).
  * All shortcut buttons are hidden from the game's own handler while L2+R2 are held. */
-PLACE(".wB");
+#if WSWAP_ZENITH
+/* second half of slotMode: slot button k (1..8) went down */
+PLACE_ZN(slotPress)
+static void slotPress(int k)
+{
+    vs_main_inventoryWeapon* t;
+
+    if (s_assign) {
+        if (assign(k)) {
+            s_assign = 0;
+        }
+        return;
+    }
+    t = inSlot(k);
+    if ((t == NULL) || t->isEquipped || !swapAllowed()) {
+        vs_battle_playInvalidSfx();
+        return;
+    }
+    func_80073554(); /* the game's own way out of the shortcut mode */
+    startSwap(t);
+}
+UNPLACE();
+#endif
+
+PLACE_Z(slotMode, PLACE(".wB"));
 static void slotMode(int rawNew)
 {
     int pressed = vs_main_buttonsPressed.all;
     int ev = (pressed & 0xF0) | rawNew;
     int k;
+#if !WSWAP_ZENITH
     vs_main_inventoryWeapon* t;
+#endif
 
     vs_main_buttonsPressed.all &= ~(0xF0F0 | PADselect | PADstart);
     vs_main_buttonRepeat &= ~(0xF0F0 | PADselect | PADstart);
     if (pressed & PADstart) { /* one press = one write; the press is swallowed (no first person view) */
+#if !ZEN_LEAN
         shieldAll();
+#endif
         return;
     }
     if (pressed & PADselect) {
@@ -585,6 +713,9 @@ static void slotMode(int rawNew)
         return;
     }
     ++k;
+#if WSWAP_ZENITH
+    slotPress(k);
+#else
     if (s_assign) {
         if (assign(k)) {
             s_assign = 0;
@@ -598,6 +729,7 @@ static void slotMode(int rawNew)
     }
     func_80073554(); /* the game's own way out of the shortcut mode */
     startSwap(t);
+#endif
 }
 UNPLACE();
 
@@ -605,7 +737,7 @@ UNPLACE();
 /* First-person view (func_8006EC7C, called from vs_battle_exec at 0x8007A10C in game mode 7):
  * the right stick looks around as well, at the speed of the left stick, up/down inverted like
  * the edited left stick/D-pad code of the original. The original then clamps the pitch. */
-PLACE(".wF"); /* func_800733F8 */
+PLACE_Z(wfp_look, PLACE(".wF")); /* func_800733F8 */
 void wfp_look(void)
 {
     portInfo_t* p = _portInfo;
@@ -627,6 +759,7 @@ void wfp_look(void)
 UNPLACE();
 #endif
 
+#if !WSWAP_ZENITH
 int wswap_entry(void)
 {
     int ret;
@@ -795,3 +928,233 @@ int wswap_entry(void)
     return ret;
 #endif
 }
+#else /* WSWAP_ZENITH: the same function in five pieces (each one fits an unreferenced function), see the header */
+
+static int s_rawNew; /* physical D-pad buttons that went down this frame (entryPad -> entryMode) */
+
+/* 1: the pad driver, the physical D-pad bits and (default) the real R3 button */
+PLACE_ZN(entryPad)
+static int entryPad(void)
+{
+    int ret;
+    int mask;
+#if !WSWAP_CLASSIC
+    int pressed;
+    int dx;
+
+    vs_main_buttonsPreviousState = s_prev;
+#endif
+    ret = vs_main_processPadState();
+#if !WSWAP_CLASSIC
+    s_prev = vs_main_buttonsState;
+#endif
+
+    /* physical D-pad: the pad driver ORs the left stick into the D-pad bits (analog mode) */
+    mask = ((~vs_main_padBuffer[0][2] & 0xF0) << 8) & vs_main_buttonsState;
+    s_rawNew = mask & ~s_raw;
+    s_raw = mask;
+
+#if !WSWAP_CLASSIC
+    /* PADj (R3): the pad driver also sets it when the right stick is pushed far in any direction
+     * (first person view by accident). In the field only the real R3 button counts, taken from
+     * the raw pad word (byte 2, bit 2, active low), with its own press edge. */
+    dx = (~vs_main_padBuffer[0][2] & 4) << 8;
+    if ((vs_battle_menuState.currentMenu & 0x3F) == 0x3F) {
+        pressed = dx & ~s_r3;
+        vs_main_buttonsState = (vs_main_buttonsState & ~PADj) | dx;
+        vs_main_buttonsPressed.all = (vs_main_buttonsPressed.all & ~PADj) | pressed;
+        vs_main_buttonRepeat = (vs_main_buttonRepeat & ~PADj) | pressed;
+        vs_main_buttonsPreviousState = (vs_main_buttonsPreviousState & ~PADj) | dx;
+    }
+    s_r3 = dx;
+#endif
+    return ret;
+}
+UNPLACE();
+
+/* 2: weapon name box: ours only while box 7 still points at an inventory name */
+PLACE_ZN(msgOff)
+static void msgOff(void)
+{
+    vs_battle_dismissTextBox(7);
+    s_msg = 0;
+}
+UNPLACE();
+
+PLACE_ZN(entryMsg)
+static void entryMsg(void)
+{
+    vs_battle_textBox* box = &vs_battle_textBoxes[7];
+
+    if ((u_int)(box->string - (char*)vs_main_inventory.weapons) >= 8 * 0x20) {
+        s_msg = 0; /* the game took the box over */
+    } else if (((vs_battle_menuState.currentMenu & 0x3F) != 0x3F)
+               || ((s_msg -= vs_gametime_tickspeed) <= 0)) {
+        msgOff();
+    }
+}
+UNPLACE();
+
+/* 3: the swap state machine (s_loading != 0). Returns 1 when the frame is over. */
+PLACE_ZN(entryLoad)
+static int entryLoad(void)
+{
+    D_800F4538_t* a;
+    vs_battle_textBox* box;
+
+    a = D_800F4538[0];
+#if WSWAP_ANIM
+    if (D_800F196C == 0) {
+        func_800B64A8(0, 0, 0); /* stand still, as the game does while (un)sheathing */
+    } else if (s_loading == 2) {
+        s_loading = 0; /* something else took over the world: give up */
+        return 1;
+    }
+    if (s_loading == 2) {
+        if ((func_8009E4B0(0) == 0) || (--s_wait <= 0)) {
+            beginSwap(s_w);
+        }
+        return 1;
+    }
+#endif
+    if (vs_battle_objectDataSlots[0].dataType != 0) {
+        return 1;
+    }
+    /* queue drained: restart the idle animation on the (possibly new)
+     * category animation table and refresh the pose and the model flags,
+     * as func_800FA2CC does after the menu changed the weapon */
+    a->unk187C = 0;
+    func_800A0204(0, 1, 0, 0);
+    func_800AFA28(a, &a->unkC54, 1);
+    vs_main_memcpy(&a->unk704, &a->unkC54, sizeof a->unk704);
+    a->unkC54.unk540 = 0;
+    func_8009D934(0, a->unk0.weaponDrawn, 2);
+    if (D_800F196C == 0) {
+#if WSWAP_ANIM
+        if (s_redraw) {
+            func_800734C0(); /* draw animation of the new weapon, mode 10 */
+        } else
+#endif
+        {
+            D_800F196C = 1;
+        }
+        box = &vs_battle_textBoxes[7];
+        if ((box->state == 0) || s_msg) {
+            vs_battle_initInformationTextBox(informationTextBoxHeaderNone);
+            vs_battle_setTextBox(7, s_w->name);
+            s_msg = MSG_TICKS;
+        }
+    }
+    s_loading = 0;
+    return 0;
+}
+UNPLACE();
+
+/* 4a: L2+R2: the overlay shows weapons. The mode stays on until the overlay is hidden
+ * again, so that the game's own labels do not flash while it slides out. */
+PLACE_ZN(modeFlags)
+static void modeFlags(int mode, int both)
+{
+    if (both) {
+        if (((vs_battle_menuState.currentMenu & 0x3F) == 0x3F) && ((mode == 1) || (mode == 6))) {
+            s_wmode = 1;
+        }
+    } else {
+        s_assign = 0;
+        if ((vs_main_buttonsState & PADL2) || (D_800EBCE8 == 10)) {
+            s_wmode = 0;
+        }
+    }
+}
+UNPLACE();
+
+/* 4: the overlay mode, the shortcut mode (6), R2+Select. Returns 1 when the camera part (entryCam) is next. */
+PLACE_ZN(entryMode)
+static int entryMode(void)
+{
+    int mode;
+    int both;
+
+    mode = D_800F196C;
+    both = (vs_main_buttonsState & (PADL2 | PADR2)) == (PADL2 | PADR2);
+    modeFlags(mode, both);
+
+    if ((vs_battle_menuState.currentMenu & 0x3F) != 0x3F) {
+        return 0;
+    }
+    migrate();
+    if (mode == 6) {
+        if (both) {
+            slotMode(s_rawNew);
+        }
+        return 0;
+    }
+    /* R2 + Select: the only input outside the overlay that changes weapon slots */
+    if ((mode == 1) && (vs_main_buttonsState & PADR2)
+        && (vs_main_buttonsPressed.all & PADselect)) {
+        if (equippedSlot() >= 0) {
+            assign(0);
+        }
+        vs_main_buttonsPressed.all &= ~PADselect;
+        vs_main_buttonRepeat &= ~PADselect;
+    }
+#if WSWAP_CLASSIC
+    /* classic: L1/R1, the sticks and everything else stay exactly as the game handles them */
+    return 0;
+#else
+    return (u_int)(mode - 1) < 3;
+#endif
+}
+UNPLACE();
+
+#if !WSWAP_CLASSIC
+/* 5: right stick X turns the camera like the physical R1 / L1; L1 and R1 exchanged (field modes 1..3) */
+PLACE_ZN(entryCam)
+static void entryCam(void)
+{
+    int dx;
+    int synth;
+
+    dx = vs_main_stickPosBuf.lStickX - 128;
+    if (dx > 64) {
+        s_cam = 1;
+    } else if (dx < -64) {
+        s_cam = -1;
+    } else if ((u_int)(dx + 40) < 80) {
+        s_cam = 0;
+    }
+    synth = 0;
+    if (s_cam) {
+        synth = (s_cam > 0) ? PADL1 : PADR1;
+    }
+
+    vs_main_buttonsState = swapLR(vs_main_buttonsState);
+    vs_main_buttonsPressed.all = swapLR(vs_main_buttonsPressed.all);
+    vs_main_buttonRepeat = swapLR(vs_main_buttonRepeat);
+    vs_main_buttonsPreviousState = swapLR(vs_main_buttonsPreviousState) | synth;
+}
+UNPLACE();
+#endif
+
+PLACE_ZN(wswap_entry)
+int wswap_entry(void)
+{
+    int ret = entryPad();
+
+    if (s_msg) {
+        entryMsg();
+    }
+    if (s_loading && entryLoad()) {
+        return ret;
+    }
+#if WSWAP_CLASSIC
+    entryMode();
+#else
+    if (entryMode()) {
+        entryCam();
+    }
+#endif
+    return ret;
+}
+UNPLACE();
+#endif /* WSWAP_ZENITH */
