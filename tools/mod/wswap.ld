@@ -7,7 +7,7 @@
  * not be larger than it (tools/mod/build_mod.sh checks the sizes and that the bytes it
  * overwrites are the original ones):
  * Default variant / classic variant (the classic one uses only the first five):
- *   .wswap2  func_800B26B8  496 bytes  wslot_label, startSwap / beginSwap, inSlot
+ *   .wswap2  func_800B26B8  496 bytes  wslot_label, inSlot / beginSwap, inSlot
  *   .wA      func_800D197C  412 bytes  beginSwap / wslot_label
  *   .wB      func_800AA108+func_800AA218 (adjacent) 392 bytes  slotMode, button tables
  *   .wC      func_800D155C  284 bytes  drawSmall (small-font text)
@@ -15,8 +15,6 @@
  *   .wE      func_8009BD90  204 bytes  swapAllowed, hint strings        (default only)
  *   .wF      func_800733F8  140 bytes  wfp_look                         (default only)
  *   .wH      func_8007FF8C  116 bytes  drawHint                         (default only)
- *   .wX      func_80099FA8  128 bytes  nextSlot                         (default only)
- *   .wY      func_800A1B28  116 bytes  inSlot                           (default only)
  * Game symbols are provided by build/mod/syms.ld (generated) + extra_syms.ld. */
 ENTRY(wswap_entry)
 SECTIONS
@@ -41,10 +39,6 @@ SECTIONS
     .wD : SUBALIGN(4) { *(.wD) *(.wd1) }
     . = 0x8009BD90;
     .wE : SUBALIGN(4) { *(.wE) *(.wd3) }
-    . = 0x80099FA8;
-    .wX : SUBALIGN(4) { *(.wX) }
-    . = 0x800A1B28;
-    .wY : SUBALIGN(4) { *(.wY) }
     . = 0x800733F8;
     .wF : SUBALIGN(4) { *(.wF) }
     . = 0x8007FF8C;

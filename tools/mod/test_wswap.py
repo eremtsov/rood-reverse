@@ -512,13 +512,13 @@ class Machine:
     _last_hw = 0
 
     def frame(self, hw=0, stick=(128, 128), lstick=(128, 128)):
-        """one game frame. In the classic variant there is no L1/R1 weapon cycling: the tests of the swap
+        """one game frame. Neither variant has L1/R1 weapon cycling: the tests of the swap
         state machine that press R1 are driven through the overlay instead (L2+R2, then the slot button of
         the weapon R1 would have picked), so that the same machine is exercised."""
         was = self._last_hw
         self._last_hw = hw
         edge = hw & ~was & (L1 | R1)
-        if (CLASSIC and self.shim_r1 and edge and not (hw & (L2 | R2)) and self.rd(MODE) == 1
+        if (self.shim_r1 and edge and not (hw & (L2 | R2)) and self.rd(MODE) == 1
                 and (self.rd(MENU, 1) & 0x3F) == 0x3F):
             d = 1 if edge & R1 else -1
             slots = {}
@@ -766,15 +766,105 @@ def test_gating():
     m.wr(MENU, 0x7F)  # "closed" with the opened-from-main-menu flag
     m.frame(R1)
     check(m.equipped() == [1], 'currentMenu 0x7F counts as closed')
-    # menu closed in mode 1 with real L1: not visible to camera/menus
-    m = fresh()
+    if not CLASSIC:
+        # menu closed in mode 1 with real L1: the game sees R1 (default variant, see test_lr_camera)
+        m = fresh()
+        m.shim_r1 = False
+        m.frame(L1)
+        check(m.rd(PRESSED) & (L1 | R1) == R1 and m.rd(REPEAT) & (L1 | R1) == R1 and m.camera_view() == R1,
+              'field: physical L1 is the game\'s R1')
+
+
+def swap_lr(b):
+    return (b & ~(L1 | R1)) | (R1 if b & L1 else 0) | (L1 if b & R1 else 0)
+
+
+def test_lr_camera():
+    """default variant: in the field (menu closed, game modes 1..3) the camera sees L1 and R1 exchanged, in every
+    button word; the right stick X adds to the same bits; no weapon cycling; elsewhere (menus, other modes) raw"""
+    words = (STATE, PRESSED, REPEAT)
+    n = 0
+    # buttons: physical -> what the game sees
+    for mode in (1, 2, 3):
+        for btn in (L1, R1, L1 | R1):
+            m = Machine()
+            m.shim_r1 = False
+            m.setup_weapons(set(), 0, slots={0: 1, 1: 2, 2: 3, 3: 4})
+            m.wr(MODE, mode)
+            m.frame(0)
+            m.log.clear()
+            m.frame(btn | CIR)
+            want = swap_lr(btn)
+            for w in words:
+                check(m.rd(w) & (L1 | R1) == want, 'mode %d buttons %x: word %x is %x, want %x' % (mode, btn, w, m.rd(w) & (L1 | R1), want))
+            check(m.camera_view() == want, 'mode %d buttons %x: the camera reads %x, want %x' % (mode, btn, m.camera_view(), want))
+            check(m.rd(PREV) == want | CIR and m.rd(PRESSED) & CIR, 'mode %d: other buttons untouched' % mode)
+            # held: the game sees the held (previous-state) bits every frame, but only one press edge
+            edges = 0
+            for _ in range(4):
+                m.frame(btn)
+                edges += (m.rd(PRESSED) & (L1 | R1)) != 0
+                check(m.camera_view() == want, 'held buttons stay exchanged')
+            check(edges == 0, 'a held button gives one press edge only (%d more)' % edges)
+            m.frame(0)
+            check(m.camera_view() == 0 and m.rd(STATE) & (L1 | R1) == 0, 'released')
+            check(m.equipped() == [0] and not any(e[0] in ('equipWeapon', 'sfx', 'toggle') for e in m.log),
+                  'L1/R1 never change the weapon (no slot cycling): %s' % m.log)
+            n += 1
+    # the right stick X: right = the game's L1 = what the physical R1 gives, left = the game's R1 = physical L1
+    for st, want in (((255, 128), L1), ((193, 128), L1), ((0, 128), R1), ((63, 128), R1), ((128, 128), 0), ((128, 0), 0), ((128, 255), 0)):
+        m = Machine()
+        m.shim_r1 = False
+        m.setup_weapons(set(), 0)
+        m.frame(0)
+        m.frame(0, stick=st)
+        check(m.camera_view() == want, 'stick %s: camera bits %x want %x' % (st, m.camera_view(), want))
+    for st, btn in (((255, 128), R1), ((0, 128), L1)):
+        m = Machine()
+        m.shim_r1 = False
+        m.frame(0)
+        m.frame(btn, stick=st)
+        check(m.camera_view() == swap_lr(btn) and m.camera_view() == (R1 if btn == L1 else L1),
+              'stick and the same-direction button give the same bit (%x)' % m.camera_view())
+    # stick and the opposite button together: both bits (the game treats it as both held)
+    m = Machine()
+    m.shim_r1 = False
+    m.frame(0)
+    m.frame(L1, stick=(255, 128))
+    check(m.camera_view() == (L1 | R1), 'stick right + physical L1: both bits')
+    # digital pad (no analog): the driver reports the stick centred; the buttons alone do it
+    m = Machine()
+    m.shim_r1 = False
+    m.frame(0)
+    m.frame(L1, stick=(128, 128), lstick=(128, 128))
+    check(m.camera_view() == R1, 'digital pad: physical L1 -> game R1')
+    m.frame(R1, stick=(128, 128), lstick=(128, 128))
+    check(m.camera_view() == L1, 'digital pad: physical R1 -> game L1')
+    # elsewhere the raw bits: menu open, and game modes 0 5 6 7 8 10
+    for mode, menu in ((1, 0), (1, 1), (0, 0x3F), (5, 0x3F), (6, 0x3F), (7, 0x3F), (8, 0x3F), (10, 0x3F)):
+        m = Machine()
+        m.shim_r1 = False
+        m.wr(MODE, mode)
+        m.wr(MENU, menu, 1)
+        m.frame(0)
+        m.frame(L1)
+        check(m.rd(PRESSED) & (L1 | R1) == L1 and m.rd(STATE) & (L1 | R1) == L1 and m.rd(PREV) & (L1 | R1) == L1,
+              'mode %d menu %x: raw L1 (menus page with it)' % (mode, menu))
+        m.frame(R1)
+        check(m.rd(PRESSED) & (L1 | R1) == R1 and m.rd(PREV) & (L1 | R1) == R1, 'mode %d menu %x: raw R1' % (mode, menu))
+    # a menu with the "opened from the main menu" flag counts as closed
+    m = Machine()
+    m.shim_r1 = False
+    m.wr(MENU, 0x7F)
+    m.frame(0)
     m.frame(L1)
-    check(m.rd(PRESSED) & (L1 | R1) == 0 and m.rd(REPEAT) & (L1 | R1) == 0 and m.camera_view() == 0,
-          'field: real L1/R1 hidden from the camera and pressed masks')
+    check(m.camera_view() == R1, 'currentMenu 0x7F is the field')
+    print('L1/R1 camera mapping: %d button cases + stick, digital pad, raw outside the field' % n)
 
 
 def test_camera():
     m = Machine()
+    m.shim_r1 = False
     m.setup_weapons(set(), 0)
     m.frame(0)
     # engage beyond +-64 from the centre (128), release inside +-40, hold in between
@@ -792,9 +882,9 @@ def test_camera():
     # PADj: see test_r3 (the fake R3 of the right stick is dropped in every direction)
     m.frame(0, stick=(128, 128))
     m.frame(0)
-    # real L1/R1 do not leak into Prev, but L2 etc do (the right stick is pushed sideways: PADj dropped)
+    # L1 and R1 come out exchanged (both held: both), the stick adds L1; the other buttons stay
     m.frame(L1 | R1 | L2 | CIR, stick=(255, 128))
-    check(m.rd(PREV) == (L2 | CIR | L1), 'prev keeps other buttons, L1 only synthetic (%x)' % m.rd(PREV))
+    check(m.rd(PREV) == (L2 | CIR | L1 | R1), 'prev keeps other buttons, L1 R1 exchanged (%x)' % m.rd(PREV))
     # non-camera modes / menu: raw
     m.frame(0)
     m.wr(MODE, 6)
@@ -1175,10 +1265,14 @@ def test_fuzz(seed=1, frames=12000):
                       'fuzz (classic): state/prev changed %x %x vs %x' % (m.rd(STATE), m.rd(PREV), st))
         else:
             if field:
-                check(pressed & (L1 | R1) == 0, 'fuzz: L1/R1 leaked into Pressed in the field')
+                # L1/R1 come out exchanged in the field (real edges, real state)
+                check(pressed & (L1 | R1) == swap_lr(edges & (L1 | R1)) and m.rd(STATE) & (L1 | R1) == swap_lr(hw & (L1 | R1)),
+                      'fuzz: L1/R1 not exchanged in the field (pressed %x state %x, hw %x)' % (pressed & 12, m.rd(STATE) & 12, hw & 12))
                 # buttons other than L1, R1, Select(R2 toggle) are unchanged
                 keep = ~(L1 | R1 | SELECT | PADJ) & 0xFFFF
                 check(pressed & keep == edges & keep, 'fuzz: pressed changed %x vs %x' % (pressed & keep, edges & keep))
+            elif closed and not loading and was_mode in (0, 5, 6, 7, 8, 10) and not (was_mode == 6 and (hw & (L2 | R2)) == (L2 | R2)):
+                check(pressed & (L1 | R1) == edges & (L1 | R1), 'fuzz: L1/R1 raw outside modes 1..3')
             elif not loading and not closed:
                 check(pressed & 0xFFF == edges & 0xFFF, 'fuzz: menu open pressed altered %x vs %x' % (pressed, edges))
             if closed:
@@ -1970,9 +2064,8 @@ def test_code_budget():
     allowed = [(0x8007991C, 4), (0x80099854, 268), (0x800AA108, 392), (0x800B26B8, 496), (0x800CA0A4, 4),
                (0x800CA1AC, 4), (0x800D155C, 284), (0x800D197C, 412), (0x800F5924, 0x800F6000 - 0x800F5924)]
     if not CLASSIC:
-        # swapAllowed + hint strings, wfp_look, drawHint, nextSlot, inSlot; the first-person look hook
-        allowed += [(0x8009BD90, 204), (0x800733F8, 140), (0x8007FF8C, 116), (0x8007A10C, 4), (0x80099FA8, 128),
-                    (0x800A1B28, 116)]
+        # swapAllowed + hint strings, wfp_look, drawHint; the first-person look hook
+        allowed += [(0x8009BD90, 204), (0x800733F8, 140), (0x8007FF8C, 116), (0x8007A10C, 4)]
     # the first-person look call: patched in the default variant only, and it is the only call of func_8006EC7C
     jal_fp = lambda t: 0x0C000000 | ((t >> 2) & 0x3FFFFFF)
     sites = [PRG_BASE + o for o in range(0, len(PRG_ORIG) - 3, 4) if struct.unpack_from('<I', PRG_ORIG, o)[0] == jal_fp(0x8006EC7C)]
@@ -2262,10 +2355,9 @@ if __name__ == '__main__':
     if CLASSIC:
         test_classic_passthrough()
     else:
-        test_cycle()
-        test_cycle_slots()
         test_swap_sequence()
         test_gating()
+        test_lr_camera()
         test_camera()
         test_r3()
         test_first_person()

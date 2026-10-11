@@ -1,6 +1,6 @@
 /*
- * Personal mod: weapon slots (L2+R2 overlay); in the default variant also L1/R1 slot
- * cycling, the camera on the right stick, no accidental first-person view and the
+ * Personal mod: weapon slots (L2+R2 overlay); in the default variant also the camera on
+ * L1/R1 (exchanged) and on the right stick, no accidental first-person view and the
  * right stick looking around in first person.
  *
  * Two variants come from this one file (WSWAP_CLASSIC below, one line per branch):
@@ -15,7 +15,8 @@
  * the game references (tools/mod/check_dead.py), see tools/mod/wswap.ld.
  *
  * Controls (field only, never while a menu is open):
- *   R1 / L1                  next / previous assigned weapon slot (slot order)  [default]
+ *   L1 / R1                  camera rotation, exchanged: L1 does what the game's R1 does and
+ *                            R1 what its L1 does (modes 1..3; menus see raw L1/R1)  [default]
  *   L2 + R2 (held)           the L2 overlay shows the weapon of each of the 8 slots
  *   ... + slot button        equip that slot's weapon (Circle, Triangle, Square, Cross,
  *                            D-pad Up, Down, Right, Left = slots 1..8; the D-pad slots
@@ -24,7 +25,7 @@
  *                            equipped weapon into that slot (moves it, or clears the
  *                            slot if it already was there)
  *   R2 (held) + Select       put the equipped weapon into the first free slot / clear it
- *   right stick X            camera rotation: right = old L1, left = old R1     [default]
+ *   right stick X            camera rotation: right = like physical R1, left = like L1  [default]
  *   right stick Y            nothing in the field (the pad driver's fake R3 is dropped; the
  *                            real R3 button and Start still toggle first person) [default]
  *   first person             the right stick looks around like the left stick; up/down
@@ -137,10 +138,10 @@ __asm__(".section " SEC_WD3 ",\"a\",@progbits\n"
 #define PLACE_LABEL() PLACE(".wA")       /* wslot_label */
 #define PLACE_START() UNPLACE()          /* startSwap: tail */
 #else
-#define PLACE_LABEL() PLACE(".wswap2")   /* wslot_label, startSwap */
-#define PLACE_START() PLACE(".wswap2")
+#define PLACE_LABEL() PLACE(".wswap2")   /* wslot_label, inSlot */
+#define PLACE_INSLOT() PLACE(".wswap2")
 #define PLACE_BEGIN() PLACE(".wA")       /* beginSwap */
-#define PLACE_INSLOT() PLACE(".wY")      /* inSlot: func_800A1B28 */
+#define PLACE_START() UNPLACE()          /* startSwap: tail */
 #endif
 
 /* mod state, lives in the blob's own zero-initialised data */
@@ -344,23 +345,12 @@ static int assign(int n)
 UNPLACE();
 
 #if !WSWAP_CLASSIC
-/* the next assigned weapon after slot cur (0..9) in direction dir, not the equipped one */
-PLACE(".wX"); /* func_80099FA8 */
-static vs_main_inventoryWeapon* nextSlot(int cur, int dir)
+/* L1 and R1 exchanged (bits 2 and 3 of the button words): the camera of the field reads them from
+ * vs_main_buttonsPreviousState, physical L1 turns it like the game's R1 and the other way round */
+static int swapLR(int v)
 {
-    vs_main_inventoryWeapon* p;
-    int j;
-
-    for (j = 8; j != 0; --j) {
-        cur = ((cur - 1 + dir) & 7) + 1;
-        p = inSlot(cur);
-        if (p && !p->isEquipped) {
-            return p;
-        }
-    }
-    return NULL;
+    return (v & ~(PADL1 | PADR1)) | ((v & PADL1) << 1) | ((v & PADR1) >> 1);
 }
-UNPLACE();
 #endif
 
 /* Text in the game's small font (the menu item font: font table 0, glyph cells in VRAM whenever the
@@ -525,12 +515,9 @@ int wswap_entry(void)
     int mask;
     int synth;
     int dx;
-    int cur;
-    int dir;
     int rawNew;
     int mode;
     int both;
-    vs_main_inventoryWeapon* w;
     D_800F4538_t* a;
     vs_battle_textBox* box;
 
@@ -646,9 +633,7 @@ int wswap_entry(void)
         }
         return ret;
     }
-#if WSWAP_CLASSIC
-    /* classic: R2 + Select is the only extra input outside the overlay; L1/R1, the sticks and
-     * everything else stay exactly as the game handles them */
+    /* R2 + Select: the only input outside the overlay that changes weapon slots */
     if ((mode == 1) && (vs_main_buttonsState & PADR2)
         && (vs_main_buttonsPressed.all & PADselect)) {
         if (equippedSlot() >= 0) {
@@ -657,12 +642,15 @@ int wswap_entry(void)
         vs_main_buttonsPressed.all &= ~PADselect;
         vs_main_buttonRepeat &= ~PADselect;
     }
+#if WSWAP_CLASSIC
+    /* classic: L1/R1, the sticks and everything else stay exactly as the game handles them */
     return ret;
 #else
     if ((u_int)(mode - 1) >= 3) {
         return ret;
     }
 
+    /* the right stick X turns the camera like the physical R1 (stick right) / L1 (stick left) */
     dx = vs_main_stickPosBuf.lStickX - 128;
     if (dx > 64) {
         s_cam = 1;
@@ -671,43 +659,19 @@ int wswap_entry(void)
     } else if ((u_int)(dx + 40) < 80) {
         s_cam = 0;
     }
-
-    pressed = vs_main_buttonsPressed.all;
-    mask = PADL1 | PADR1;
     synth = 0;
     if (s_cam) {
         synth = (s_cam > 0) ? PADL1 : PADR1;
     }
 
-    if (mode == 1) {
-        cur = equippedSlot();
-        w = vs_main_inventory.weapons;
-
-        if ((vs_main_buttonsState & PADR2) && (pressed & PADselect)) {
-            if (cur >= 0) {
-                assign(0);
-            }
-            vs_main_buttonsPressed.all &= ~PADselect;
-            vs_main_buttonRepeat &= ~PADselect;
-        } else if ((pressed & (PADL1 | PADR1)) && swapAllowed()) {
-            dir = (pressed & PADR1) ? 1 : -1;
-            cur = (cur >= 0) ? w[cur].gems[3] : 0;
-            if (cur == 0) {
-                cur = (dir > 0) ? 0 : 9;
-            }
-            w = nextSlot(cur, dir);
-            if (w == NULL) {
-                vs_battle_playInvalidSfx();
-            } else {
-                startSwap(w);
-            }
-        }
-    }
-
-    vs_main_buttonsPressed.all &= ~mask;
-    vs_main_buttonRepeat &= ~mask;
-    vs_main_buttonsState &= ~mask;
-    vs_main_buttonsPreviousState = (vs_main_buttonsPreviousState & ~mask) | synth;
+    /* Field gameplay (menu closed, modes 1..3): physical L1 does what the game's R1 does and R1 what its L1
+     * does. The game sees the exchanged bits in every button word, the stick is ORed into the exchanged
+     * previous-state word the camera reads. Menus keep the raw L1/R1 (this point is not reached then);
+     * works without the analog sticks as well (digital pad: only the buttons). */
+    vs_main_buttonsState = swapLR(vs_main_buttonsState);
+    vs_main_buttonsPressed.all = swapLR(vs_main_buttonsPressed.all);
+    vs_main_buttonRepeat = swapLR(vs_main_buttonRepeat);
+    vs_main_buttonsPreviousState = swapLR(vs_main_buttonsPreviousState) | synth;
 
     return ret;
 #endif
