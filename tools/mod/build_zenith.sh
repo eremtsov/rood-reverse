@@ -9,7 +9,9 @@
 #   OUT.bin          the result (a .cue is written next to it)
 #
 # Needs a tree in which `make` has run once (build/config/*, build/src/include/lbas.h) and the toolchain of build_mod.sh.
-# Steps: compile src/mod/wswap.c with -DWSWAP_ZENITH=1 (the branch sets it), pack its sections into the unreferenced
+# Steps: check that every range of tools/mod/zenith_bins.txt is unreferenced by every executable of both images
+# (tools/mod/check_refs_disc.py; needs the splat output build/src/SLUS_010.40 and build/src/BATTLE of `make`),
+# compile src/mod/wswap.c with -DWSWAP_ZENITH=1 (the branch sets it), pack its sections into the unreferenced
 # functions of tools/mod/zenith_bins.txt (tools/mod/zenith_pack.py -> tools/mod/wswap-zenith.ld, checked in), link, and
 # put everything on the Zenith image with tools/mod/zenith_port.py. Then the behavioural test runs against the new files.
 set -euo pipefail
@@ -24,6 +26,12 @@ die() { echo "build_zenith: $*" >&2; exit 1; }
 grep -q '^#define WSWAP_ZENITH 1' src/mod/wswap.c || die "src/mod/wswap.c does not have '#define WSWAP_ZENITH 1' (use a zenith branch)"
 if grep -q '^#define WSWAP_CLASSIC 1' src/mod/wswap.c; then VARIANT=classic; else VARIANT=default; fi
 rm -rf "$M"; mkdir -p "$M"
+
+# 0. every range must be unreferenced on the whole disc: SLUS_010.40 is always resident, BATTLE.PRG is resident together with
+#    MENU/INITBTL/EFFECT/SCREFF2; the first Zenith build used libcd/libds functions that TITLE.PRG calls (mod/zenith-edition.md)
+python3 -I tools/mod/check_refs_disc.py --vanilla "$ORIG" --zenith "$ZEN" --repo . --bins tools/mod/zenith_bins.txt \
+    --out "$M/check_refs.txt" >/dev/null || die "a range of tools/mod/zenith_bins.txt fails tools/mod/check_refs_disc.py: see $M/check_refs.txt"
+tail -1 "$M/check_refs.txt"
 
 # 1. compile (same compiler and flags as the BATTLE.PRG sources, see the Makefile rule for build/src/mod/wswap.c.o)
 cc -E -nostdinc -I include/psx -I src/include -I ./ -D "__attribute__(x)=" -D_LANGUAGE_C src/mod/wswap.c \
