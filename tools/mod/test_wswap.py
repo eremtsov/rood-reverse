@@ -1204,7 +1204,11 @@ S_ASSIGN = SYMS_BLOB['s_assign']
 S_LOADING_ADDR = SYMS_BLOB['s_loading']
 SLOT_BTN = [CIR, TRI, SQR, CRS, DUP, DDOWN, DRIGHT, DLEFT]    # slot 1..8
 SLOT_OF_ID = [2, 3, 1, 4, 5, 8, 7, 6]
-BUDGET = [74, 54, 64, 100, 110, 76, 52, 75]
+# per overlay label id: (text anchor x, text y, right aligned, budget in characters of 6 px), slot of SLOT_OF_ID
+#   Triangle, Square (raised 5), Circle, Cross (+1), Up, Left (ends at its bullet), Right (lowered 6), Down
+EXP_LAB = [(242, 99, 0, 12), (214, 108, 1, 17), (252, 111, 0, 10), (223, 126, 1, 19),
+           (94, 99, 0, 21), (71, 112, 1, 11), (103, 117, 0, 17), (81, 124, 1, 12)]
+BUDGET = [e[3] for e in EXP_LAB]
 # small-font palettes: weapon, equipped, assign-mode weapon, assign-mode equipped, hint, assign prompt
 PAL = [4, 5, 6, 5, 7, 6]
 SEL_SHORTCUT_BITS = 0xF0F0   # Circle/Triangle/Square/Cross + D-pad: the game's own shortcut buttons
@@ -1221,8 +1225,10 @@ def enc_raw(text):
 HINT, HINT_ASSIGN = enc_raw('SELECT: ASSIGN'), enc_raw('ASSIGN: PRESS A SLOT')
 
 
-def enc(text):
-    """ASCII -> game encoding, 24 bytes padded with the terminator 0xE7"""
+def enc(text, space=(0xFA, 6)):
+    """ASCII -> game encoding, 24 bytes padded with the terminator 0xE7. Item names separate words with
+    `FA 06` (vs_char_spacing 6; seen in the game's data: 'Soul Kiss' = 1C 32 38 2F FA 06 14 2C 36 36 E7);
+    space=(0x8F,) gives the space glyph instead"""
     out = []
     for ch in text:
         if ch.isdigit():
@@ -1231,9 +1237,13 @@ def enc(text):
             out.append(10 + ord(ch) - 65)
         elif 'a' <= ch <= 'z':
             out.append(0x24 + ord(ch) - 97)
+        elif ch == ' ':
+            out.extend(space)
         else:
-            out.append({' ': 0x8F, '-': 0xA7, '.': 0xA0, "'": 0x96}[ch])
-    out = out[:24]
+            out.append({'-': 0xA7, '.': 0xA0, "'": 0x96}[ch])
+    out = out[:23]      # always terminated: the game's names are
+    if out and out[-1] == 0xFA:
+        out.pop()       # never cut `FA n` in two
     return bytes(out) + b'\xE7' * (24 - len(out))
 
 
@@ -1242,24 +1252,27 @@ def adv(m, c):
     return 6 if c == 0x8F else m.rd(CHAR_WIDTHS + c, 1)
 
 
-def ref_small(m, raw, budget, align, x, y, pal):
-    """the calls drawSmall must make: setFontStyle(pal), then one glyph call per character that fits into
-    budget pixels (trailing spaces dropped), aligned left (0), centred (1) or ending at x (2), drawn at y - 1,
-    the sprites linked at vs_scratch.unk8 - 12 (the `ot` argument; the font routine adds 12)"""
-    i = wd = 0
-    raw = bytes(raw)[:24]
-    while i < len(raw) and raw[i] < 0xAE:
-        w = adv(m, raw[i])
-        if wd + w > budget:
-            break
-        wd += w
-        i += 1
-    while i > 0 and raw[i - 1] == 0x8F:
-        i -= 1
-        wd -= 6
+def ref_small(m, raw, maxch, align, x, y, pal):
+    """the calls drawSmall must make: setFontStyle(pal), then one glyph call per character, at most maxch
+    characters (6 px each), a blank (`FA n` or the glyph 0x8F) is one 0x8F glyph call (the font routine draws
+    nothing and advances 6), trailing blanks dropped; aligned left (0), centred (1) or ending at x (2); drawn
+    at y - 1, the sprites linked at vs_scratch.unk8 - 12 (the `ot` argument; the font routine adds 12)"""
+    raw = bytes(raw)
+    items = []
+    k = i = 0
+    while len(items) < maxch and i < len(raw) and raw[i] != 0xE7:
+        c = raw[i]
+        if c == 0xFA:
+            items.append(0x8F)
+            i += 2
+        else:
+            items.append(c)
+            i += 1
+            if c != 0x8F:
+                k = len(items)
     out = [('style', pal)]
-    xx = x - ((wd * align) >> 1)
-    for c in raw[:i]:
+    xx = x - k * 3 * align
+    for c in items[:k]:
         out.append(('glyph', c, xx, y - 1, SCRATCH_UNK8 - 12))
         xx += adv(m, c)
     return out
@@ -1324,6 +1337,74 @@ def raw_name(m, entry):
     return bytes(m.mem[a:a + 24])
 
 
+def label_step(m, i, anim):
+    """x shift of the overlay animation: button group +step, D-pad group -step"""
+    st = m.rd(SYM['vs_battle_rowAnimationSteps'] + anim, 1)
+    return st if i < 4 else -st
+
+
+def label_geometry(m):
+    """text rectangles of the widest label of every id, glyph and bullet rectangles of the game (fully slid in)"""
+    glyphs = {'dpad': (72, 102, 30, 30)}
+    for k in range(4):
+        v = m.rd(0x800EBC88 + 4 * k)
+        glyphs['face%d' % k] = (160 + (v & 0xFFFF), (v >> 16) & 0xFFFF, 16, 16)
+    bullets = []
+    for i in range(8):
+        x, y, bx, by = native_xy(m, i, 0)
+        bullets.append((bx, by, 6, 6))
+    boxes = []
+    for i, (ax, y, right, n) in enumerate(EXP_LAB):
+        wd = 6 * n
+        x0 = ax - wd if right else ax
+        boxes.append((x0, y + 1, wd, 9))      # ink rows y+1 .. y+9 of the 12 px cell drawn at y-1
+    return glyphs, bullets, boxes
+
+
+def test_label_layout():
+    """every label of the widest name: >= 4 px from the screen edge and from anything foreign (other labels sharing
+    a text row, glyphs and bullets that are not its own), exactly the layout the budgets were computed from"""
+    m = Machine()
+    glyphs, bullets, boxes = label_geometry(m)
+
+    def gap(a, b):
+        """horizontal gap between two rectangles that share rows, else None; negative if they overlap"""
+        if a[1] >= b[1] + b[3] or b[1] >= a[1] + a[3]:
+            return None
+        return max(b[0] - (a[0] + a[2]), a[0] - (b[0] + b[2]))
+    for i, bx in enumerate(boxes):
+        x0, x1 = bx[0], bx[0] + bx[2]
+        check(x0 >= 4 and x1 <= 316, 'id %d: %d..%d is inside the screen with a 4 px margin' % (i, x0, x1))
+        for j, ob in enumerate(boxes):
+            if j > i:
+                g = gap(bx, ob)
+                check(g is None or g >= 4, 'labels %d and %d on a shared row are %s px apart' % (i, j, g))
+        for j, bl in enumerate(bullets):
+            if j == i:
+                continue
+            g = gap(bx, bl)
+            check(g is None or g >= 4 or (g >= 0 and False), 'label %d vs the bullet of %d: %s px' % (i, j, g))
+        own = ['dpad'] if i >= 4 else ['face%d' % k for k in range(4)]
+        for name, gl in glyphs.items():
+            if name in own:
+                continue
+            g = gap(bx, gl)
+            check(g is None or g >= 4, 'label %d vs glyph %s: %s px' % (i, name, g))
+    # anchors against the game's bullets: left aligned labels start 5 px after their bullet (the native picture
+    # position), right aligned ones end within 0..1 px of the bullet; nothing but the bullet is closer
+    for i, (ax, y, right, n) in enumerate(EXP_LAB):
+        bx = native_xy(m, i, 0)[2]
+        if right:
+            check(0 <= ax - bx <= 1, 'id %d right aligned label ends %d px after its bullet' % (i, ax - bx))
+        else:
+            check(4 <= ax - bx <= 6, 'id %d left aligned label starts %d px after its bullet' % (i, ax - bx))
+    # the alignment in the table: odd id = right aligned (the label is on the left of its glyph)
+    check([e[2] for e in EXP_LAB] == [i & 1 for i in range(8)], 'odd ids are right aligned')
+    # the rows: nothing but Up/Triangle, Left/Right/Square/Circle/Down/Cross rows overlap; Square and Right no longer
+    check(gap(boxes[1], boxes[6]) is None, 'Square and D-pad Right no longer share a text row')
+    print('label layout: 8 labels checked against the screen, each other, glyphs and bullets')
+
+
 def test_label_weapons():
     m = overlay_machine()
     n = 0
@@ -1335,56 +1416,86 @@ def test_label_weapons():
             for i in range(8):
                 m.log.clear()
                 v = m.call(LABEL, i)
-                x, y, bx, by = native_xy(m, i, anim)
+                ax, y, right, mx = EXP_LAB[i]
+                x, _, bx, by = native_xy(m, i, anim)
                 w = [e for e in range(8) if SLOT_OF_ID[i] == e + 1][0]
                 pal = PAL[assign * 2 + (1 if w == 0 else 0)]
                 exp = [('bullet', bx, by, 0x180)]
-                exp += ref_small(m, raw_name(m, w), BUDGET[i], 2 if i & 1 else 0, x - (2 if i & 1 else 0), y, pal)
+                exp += ref_small(m, raw_name(m, w), mx, 2 if right else 0, ax + label_step(m, i, anim), y, pal)
                 if i == 4 and anim == 0:
-                    exp += ref_small(m, HINT_ASSIGN if assign else HINT, 320, 1, 160, 142, PAL[4 + assign])
+                    exp += ref_small(m, HINT_ASSIGN if assign else HINT, 30, 1, 160, 142, PAL[4 + assign])
                 check(v == 0 and m.log == exp, 'label id %d anim %d assign %d:\n   got  %s\n   want %s' % (i, anim, assign, m.log, exp))
                 check(not any(e[0] == 'text' for e in m.log), 'the raw-text font (glyph 0 = HUD digits in the field) is not used')
                 n += 1
-    print('labels (positions vs the game tables, names, small-font palettes, hint): %d cases' % n)
-    # names with spaces: every space is glyph 0x8F (the font routine draws nothing and advances 6) -- never the raw
-    # font's glyph 0, which shows a digit in the field
+    print('labels (positions, names, small-font palettes, hint): %d cases' % n)
+    # names with blanks: `FA 06` between the words (what the game's item names really contain) and the space
+    # glyph 0x8F both come out as a 6 px gap, the second word is drawn when it fits
     m.wr(S_ASSIGN, 0)
     m.wr(D_ANIM, 1, 1)      # (the hint line is drawn only at animation step 0)
-    spaced = 0
-    for i in range(8):
-        w = SLOT_OF_ID[i] - 1
-        m.log.clear()
-        m.call(LABEL, i)
-        glyphs = [e for e in m.log if e[0] == 'glyph']
-        if 0x8F in raw_name(m, w)[:len(glyphs)]:
-            spaced += 1
-            sp = [k for k, e in enumerate(glyphs) if e[1] == 0x8F]
-            check(sp, 'id %d: a name with a space draws it as glyph 0x8F' % i)
-            for k in sp:
-                if k + 1 < len(glyphs):
-                    check(glyphs[k + 1][2] == glyphs[k][2] + 6, 'id %d: the space advances 6 px' % i)
-    check(spaced >= 4, 'test names with spaces were drawn (%d)' % spaced)
-    # truncation to the width budget: no label is wider than its budget; names are cut, not wrapped; right
-    # aligned labels (odd id) end at their anchor
-    for nm in ('A' * 24, 'W' * 24, 'I' * 24, 'Hand Axe', 'Aa Bb Cc Dd Ee Ff Gg Hh', 'Ab-Cd.Ef 0123456789', ' ' * 5 + 'X', 'X ' * 12,
-               'Bandit Knife', "Dragon's Tail Whip Spear"):
+
+    def drawn(m, i):
+        return [e for e in m.log if e[0] == 'glyph']
+
+    def text_of(gl):
+        """the drawn text from the glyph calls: letters of the font, '_' for a blank"""
+        out = ''
+        for e in gl:
+            c = e[1]
+            out += '_' if c == 0x8F else (chr(48 + c) if c < 10 else chr(55 + c) if c < 36 else chr(61 + c) if c < 62 else '?')
+        return out
+    for space in ((0xFA, 6), (0x8F,)):
         for i in range(8):
             w = SLOT_OF_ID[i] - 1
-            m.w(INV + w * W_SIZE + W_NAME, enc(nm))
-            m.log.clear()
-            m.call(LABEL, i)
-            glyphs = [e for e in m.log if e[0] == 'glyph']
-            width = sum(adv(m, e[1]) for e in glyphs)
-            check(width <= BUDGET[i], 'name %r id %d is %d px > %d' % (nm, i, width, BUDGET[i]))
-            x, y, bx, by = native_xy(m, i, 1)
-            anchor = x - (2 if i & 1 else 0)
-            exp = ref_small(m, enc(nm), BUDGET[i], 2 if i & 1 else 0, anchor, y, PAL[1 if w == 0 else 0])
-            check([e for e in m.log if e[0] in ('style', 'glyph')][:len(exp)] == exp, 'name %r id %d' % (nm, i))
-            check(not glyphs or glyphs[-1][1] != 0x8F, 'no trailing space drawn')
-            if i & 1 and glyphs:
-                check(glyphs[-1][2] + adv(m, glyphs[-1][1]) == anchor, 'name %r id %d right aligned' % (nm, i))
-            if not (i & 1) and glyphs:
-                check(glyphs[0][2] == anchor, 'name %r id %d left aligned' % (nm, i))
+            mx = BUDGET[i]
+            right = EXP_LAB[i][2]
+            cases = {
+                'Soul Kiss': 'Soul Kiss',
+                'Seventh Heaven': 'Seventh Heaven',
+                'Pink Panther Spear': 'Pink Panther Spear',
+                'exact fit': 'W' * ((mx - 1) // 2) + ' ' + 'W' * (mx - 1 - (mx - 1) // 2),
+                'one too long': 'W' * ((mx - 1) // 2) + ' ' + 'W' * (mx - (mx - 1) // 2),
+                'blank at the cut': 'W' * (mx - 1) + ' ' + 'WWW',
+                'blank before the cut': 'W' * (mx - 2) + ' ' + 'WWW',
+            }
+            for label, nm in cases.items():
+                m.w(INV + w * W_SIZE + W_NAME, enc(nm, space))
+                m.log.clear()
+                m.call(LABEL, i)
+                gl = drawn(m, i)
+                want = nm[:mx].rstrip(' ')
+                if space == (0xFA, 6) and len(enc(nm, space)) and False:
+                    pass
+                got = text_of(gl).replace('_', ' ')
+                if len(want) > mx:
+                    want = want[:mx]
+                check(got == want, 'id %d %r (%s) space=%s: drew %r, want %r' % (i, nm, label, space, got, want))
+                # the gap is real: consecutive glyph x differ by 6 across a blank
+                xs = [e[2] for e in gl]
+                check(all(b - a == 6 for a, b in zip(xs, xs[1:])), 'id %d %r: 6 px per character incl. blanks' % (i, nm))
+                if gl:
+                    ax = EXP_LAB[i][0] + label_step(m, i, 1)
+                    if right:
+                        check(xs[-1] + 6 == ax, 'id %d %r ends at the anchor' % (i, nm))
+                    else:
+                        check(xs[0] == ax, 'id %d %r starts at the anchor' % (i, nm))
+    # exact fit really shows both words (and all the characters); one more character is cut, not the second word
+    for i in range(8):
+        w = SLOT_OF_ID[i] - 1
+        mx = BUDGET[i]
+        a = (mx - 1) // 2
+        m.w(INV + w * W_SIZE + W_NAME, enc('A' * a + ' ' + 'B' * (mx - 1 - a)))
+        m.log.clear()
+        m.call(LABEL, i)
+        check(len(drawn(m, i)) == mx, 'id %d: a %d character two-word name is drawn completely' % (i, mx))
+        m.w(INV + w * W_SIZE + W_NAME, enc('A' * a + ' ' + 'B' * (mx - a)))
+        m.log.clear()
+        m.call(LABEL, i)
+        check(len(drawn(m, i)) == mx and text_of(drawn(m, i)).endswith('B' * (mx - 1 - a)), 'id %d: one character too many is cut mid-word' % i)
+    # a name that is only blanks draws nothing; an empty name too
+    m.w(INV + 0 * W_SIZE + W_NAME, enc(' '))
+    m.log.clear()
+    m.call(LABEL, 2)
+    check(not drawn(m, 2), 'blank name: no glyph')
     # an empty slot draws the dimmed native bullet only: no "--", no text, no glyph, no font call
     m = overlay_machine(slots={0: 3, 1: 0})
     for anim in (0, 5):
@@ -1396,7 +1507,7 @@ def test_label_weapons():
             if SLOT_OF_ID[i] in (3, ):
                 check(m.log[0][3] == 0x180 and any(e[0] == 'glyph' for e in m.log), 'slot 3 weapon shown')
             else:
-                hint = [] if not (i == 4 and anim == 0) else ref_small(m, HINT, 320, 1, 160, 142, PAL[4])
+                hint = [] if not (i == 4 and anim == 0) else ref_small(m, HINT, 30, 1, 160, 142, PAL[4])
                 check(m.log == [('bullet', bx, by, 0x140)] + hint, 'empty slot id %d draws only the bullet: %s' % (i, m.log))
     m.wr(S_ASSIGN, 1)
     m.log.clear()
@@ -1559,7 +1670,7 @@ def test_assign_mode():
     m.wr(D_ANIM, 0, 1)
     m.log.clear()
     m.call(LABEL, 4)
-    want = ref_small(m, HINT_ASSIGN, 320, 1, 160, 142, PAL[5])
+    want = ref_small(m, HINT_ASSIGN, 30, 1, 160, 142, PAL[5])
     check(m.log[-len(want):] == want and not any(e[0] == 'text' for e in m.log), 'assign hint (small font, no raw text): %s' % (m.log[-3:],))
     m.log.clear()
     m.frame(L2 | R2 | SELECT)
@@ -1859,8 +1970,9 @@ def test_code_budget():
     allowed = [(0x8007991C, 4), (0x80099854, 268), (0x800AA108, 392), (0x800B26B8, 496), (0x800CA0A4, 4),
                (0x800CA1AC, 4), (0x800D155C, 284), (0x800D197C, 412), (0x800F5924, 0x800F6000 - 0x800F5924)]
     if not CLASSIC:
-        # swapAllowed + hint strings, startSwap, drawHint; the first-person look hook; func_800D9910 (nextSlot, wfp_look)
-        allowed += [(0x8009BD90, 204), (0x800733F8, 140), (0x8007FF8C, 116), (0x8007A10C, 4), (0x800D9910, 604)]
+        # swapAllowed + hint strings, wfp_look, drawHint, nextSlot, inSlot; the first-person look hook
+        allowed += [(0x8009BD90, 204), (0x800733F8, 140), (0x8007FF8C, 116), (0x8007A10C, 4), (0x80099FA8, 128),
+                    (0x800A1B28, 116)]
     # the first-person look call: patched in the default variant only, and it is the only call of func_8006EC7C
     jal_fp = lambda t: 0x0C000000 | ((t >> 2) & 0x3FFFFFF)
     sites = [PRG_BASE + o for o in range(0, len(PRG_ORIG) - 3, 4) if struct.unpack_from('<I', PRG_ORIG, o)[0] == jal_fp(0x8006EC7C)]
@@ -1953,17 +2065,21 @@ def test_r3():
 
 
 def fp_run(m, prev, left, right, yaw, pitch, mode=7):
-    """call wfp_look with the given state; returns (yaw, pitch, log)"""
+    """call wfp_look with the given state; returns (yaw, pitch, log). left = _portInfo rStick (the physical left
+    stick, bytes 3/4), right = _portInfo lStick (the physical right stick, bytes 5/6)"""
     m.log.clear()
     m.wr(PORTINFO, mode, 1)
     m.wr(PORTINFO + 3, left[0], 1)
     m.wr(PORTINFO + 4, left[1], 1)
-    m.wr(STICK, right[0])
-    m.wr(STICK + 4, right[1])
+    m.wr(PORTINFO + 5, right[0], 1)
+    m.wr(PORTINFO + 6, right[1], 1)
     m.wr(PREV, prev)
     m.wr(CAM, yaw & 0xFFFFFFFF)
     m.wr(CAM + 4, pitch & 0xFFFFFFFF)
     m.call(SYMS_BLOB['wfp_look'])
+    # nothing but the camera angles may change: the stick bytes and the held-buttons word are restored
+    check([m.rd(PORTINFO + k, 1) for k in (0, 3, 4, 5, 6)] == [mode, left[0], left[1], right[0], right[1]]
+          and m.rd(PREV) == prev, 'wfp_look restores _portInfo and the button state')
     return m.rds(CAM), m.rds(CAM + 4), list(m.log)
 
 
@@ -1977,16 +2093,8 @@ def tmod(a, b=4096):
     return r if a >= 0 else -r
 
 
-def fp_ref(prev, left, right, yaw, pitch, mode=7):
-    """first person look: the right stick (mod), then the game's func_8006EC7C with up/down inverted"""
-    dx, dy = right[0] - 128, right[1] - 128
-    if dx + 64 < 0 or dx + 64 > 128:
-        d = dx - 64 if dx > 0 else dx + 64
-        yaw = (yaw + tdiv(d, 3)) & 0xFFF
-    if dy + 64 < 0 or dy + 64 > 128:
-        d = dy - 64 if dy > 0 else dy + 64
-        pitch -= tdiv(d, 3)
-    # func_8006EC7C
+def fp_orig(prev, left, yaw, pitch, mode):
+    """the game's func_8006EC7C with up/down inverted (what the decomp edit does)"""
     if prev & DDOWN:
         pitch = tmod(pitch - 32)
     if prev & DUP:
@@ -2004,8 +2112,18 @@ def fp_ref(prev, left, right, yaw, pitch, mode=7):
         if b + 64 < 0 or b + 64 > 128:
             v = b + 64 if b <= 0 else b - 64
             pitch = tmod(pitch - tdiv(v, 3))
-    pitch = max(-896, min(896, pitch)) if (pitch > 896 or pitch < -896) else pitch
+    if pitch > 896:
+        pitch = 896
+    elif pitch < -896:
+        pitch = -896
     return yaw, pitch
+
+
+def fp_ref(prev, left, right, yaw, pitch, mode=7):
+    """first person look: the game's update with D-pad and left stick, then once more with the right stick in the
+    left stick's place and without the D-pad"""
+    yaw, pitch = fp_orig(prev, left, yaw, pitch, mode)
+    return fp_orig(prev & ~(DUP | DDOWN | DLEFT | DRIGHT), right, yaw, pitch, mode)
 
 
 def test_first_person():
@@ -2022,21 +2140,23 @@ def test_first_person():
     check((y, p) == (-32, 0), 'D-pad left unchanged: yaw -32')
     y, p, log = fp_run(m, DRIGHT, C, C, 0, 0)
     check((y, p) == (32, 0), 'D-pad right unchanged: yaw +32')
-    for name, left, right in (('left', (128, 255), C), ('right', C, (128, 255))):
-        y, p, log = fp_run(m, 0, left, right, 0, 0)
-        check(y == 0 and p == -tdiv(128 - 64, 3), '%s stick down: pitch %d (inverted, was +): %s' % (name, p, (y, p)))
-        y, p, log = fp_run(m, 0, (128, 0) if name == 'left' else C, C if name == 'left' else (128, 0), 0, 0)
+    check(fp_run(m, DUP | DRIGHT, C, C, 0, 0)[:2] == (32, 32), 'the D-pad is applied once, not twice')
+    for name in ('left', 'right'):
+        def run(pos):
+            return fp_run(m, 0, pos if name == 'left' else C, C if name == 'left' else pos, 0, 0)[:2]
+        y, p = run((128, 255))
+        check(y == 0 and p == -tdiv(128 - 64, 3), '%s stick down: pitch %d (inverted, was +)' % (name, p))
+        y, p = run((128, 0))
         check(y == 0 and p == tdiv(128 - 64, 3), '%s stick up: pitch +%d' % (name, p))
-        y, p, log = fp_run(m, 0, (255, 128) if name == 'left' else C, C if name == 'left' else (255, 128), 0, 0)
+        y, p = run((255, 128))
         check(p == 0 and y == tdiv(127 - 64, 3), '%s stick right: yaw +%d' % (name, y))
-        y, p, log = fp_run(m, 0, (0, 128) if name == 'left' else C, C if name == 'left' else (0, 128), 0, 0)
-        check(p == 0 and y == (-tdiv(128 - 64, 3) & 0xFFF if name == 'right' else -tdiv(128 - 64, 3)),
-              '%s stick left: yaw %d' % (name, y))
+        y, p = run((0, 128))
+        check(p == 0 and y == -tdiv(128 - 64, 3), '%s stick left: yaw %d' % (name, y))
     # --- the right stick has the speed and the dead zone of the left stick
     for v in range(0, 256):
         yl, pl, _ = fp_run(m, 0, (v, v), C, 0, 0)
         yr, pr, _ = fp_run(m, 0, C, (v, v), 0, 0)
-        check(pl == pr and (yl & 0xFFF) == (yr & 0xFFF), 'left/right stick give the same look at %d: %s %s' % (v, (yl, pl), (yr, pr)))
+        check(pl == pr and yl == yr, 'left/right stick give the same look at %d: %s %s' % (v, (yl, pl), (yr, pr)))
         if 64 <= v <= 192:
             check(yr == 0 and pr == 0, 'dead zone at %d' % v)
     # both sticks add up
@@ -2047,9 +2167,9 @@ def test_first_person():
     check(p == -896, 'pitch clamped at -896: %d' % p)
     y, p, _ = fp_run(m, DUP, C, (128, 0), 0, 890)
     check(p == 896, 'pitch clamped at +896: %d' % p)
-    # --- the update runs once per call, the world is told the new yaw
+    # --- two updates per call (one per stick set), each tells the world the yaw
     y, p, log = fp_run(m, 0, C, (255, 128), 100, 0)
-    check([e[0] for e in log] == ['actorYaw', 'lookAt'] and log[0][2] == y & 0xFFF, 'one update per call: %s' % (log,))
+    check([e[0] for e in log] == ['actorYaw', 'lookAt'] * 2 and log[2][2] == y & 0xFFF, 'two updates per call: %s' % (log,))
     # --- random cases against the reference model
     bad = 0
     for _ in range(3000):
@@ -2067,7 +2187,7 @@ def test_first_person():
                 print('  first person mismatch prev=%x left=%s right=%s yaw=%d pitch=%d mode=%d: got %s want %s'
                       % (prev, left, right, yaw, pitch, mode, (y, p), (ry, rp)))
     check(bad == 0, 'first person look matches the model in all random cases (%d wrong)' % bad)
-    # digital pad (mode 4): the right stick buffer is 128 (the driver centres it): nothing but the D-pad
+    # digital pad (mode 4): no stick input at all
     y, p, _ = fp_run(m, 0, C, C, 5, 5, mode=4)
     check((y, p) == (5, 5), 'no input, no change')
     print('first person: directions, dead zone, speed, clamp, 3000 random cases checked')
@@ -2137,6 +2257,7 @@ if __name__ == '__main__':
     print('entry = 0x%08X  wslot_label = 0x%08X' % (ENTRY, LABEL))
     test_code_budget()
     test_label_original()
+    test_label_layout()
     test_label_weapons()
     if CLASSIC:
         test_classic_passthrough()

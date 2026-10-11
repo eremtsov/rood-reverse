@@ -37,6 +37,7 @@ start = int(sys.argv[1], 16) if len(sys.argv) > 1 else 0x800B26B8
 size = int(sys.argv[2], 0) if len(sys.argv) > 2 else 496
 fname = sys.argv[3] if len(sys.argv) > 3 else None
 end = start + size
+lo = start - 4   # the delay slot of the preceding `jr ra` / `j` counts as part of the range for every reference scan
 
 CO_RESIDENT = lambda rel: (rel in ('BATTLE/BATTLE.PRG', 'SLUS_010.40', 'BATTLE/INITBTL.PRG', 'GIM/SCREFF2.PRG')
                            or (rel.startswith('MENU/') and rel.endswith('.PRG'))
@@ -61,9 +62,9 @@ for dirpath, _, names in os.walk(os.path.join(ROOT, 'data')):
             op = w >> 26
             if op == 2 or op == 3:
                 t = 0x80000000 | ((w & 0x03FFFFFF) << 2)
-                if start <= t < end and not inside(i * 4):
+                if lo <= t < end and not inside(i * 4):
                     hits.append(('jal' if op == 3 else 'j', rel, i * 4, t))
-            elif start <= w < end:
+            elif lo <= w < end:
                 if not inside(i * 4):
                     hits.append(('word', rel, i * 4, w))
             elif op == 0x0F and (start >> 16) <= (w & 0xFFFF) <= ((end - 1) >> 16) + 1:
@@ -79,7 +80,7 @@ for dirpath, _, names in os.walk(os.path.join(ROOT, 'data')):
                         imm = w2 & 0xFFFF
                         simm = imm - 0x10000 if imm & 0x8000 else imm
                         val = ((hi << 16) | imm) if op2 == 0x0D else (((hi << 16) + simm) & 0xFFFFFFFF)
-                        if start <= val < end and not inside(i * 4):
+                        if lo <= val < end and not inside(i * 4):
                             hits.append(('lui', rel, i * 4, val))
                     # stop following the register once it is overwritten
                     if op2 == 0 and rd2 == reg and (w2 & 63) not in (8, 0x18, 0x19, 0x1A, 0x1B):
@@ -130,7 +131,10 @@ for dirpath, _, names in os.walk(os.path.join(ROOT, 'data')):
                     simm -= 0x10000
                 src = base + i * 4
                 t = src + 4 + simm * 4
-                if start <= t < end and not (start <= src < end):
+                # a branch from anywhere (also from the preceding function) into the range, or onto the delay slot of
+                # the preceding `jr ra` (func_800D9910 was the second half of func_800D98E8: `beqz` onto the delay
+                # slot of its `jr ra`, which then falls through into the "dead" range)
+                if (start <= t < end and not (start <= src < end)) or t == lo:
                     branch_hits.append((rel, i * 4, src, t))
 print('branch scan: %d co-resident files decoded at their load addresses' % nbr)
 print('PC-relative branches into the range from outside it: %d' % len(branch_hits))
@@ -145,6 +149,56 @@ if BASE <= start < BASE + 0x7F984:
     ends = pw[0] == 0x03E00008 or (pw[0] >> 26) == 2
     print('previous function ends with "%08X %08X": %s' % (pw[0], pw[1], 'jr ra / j + delay slot (no fall-through)' if ends else 'MAY FALL THROUGH'))
     fallthrough = not ends
+
+# ---- symbol boundaries (config/BATTLE/BATTLE.PRG/symbol_addrs.txt) --------------------------------
+# The range must start exactly at a symbol marked type:func and end exactly at a symbol (the next one, or for a
+# group of adjacent functions the next after the last of them). The interior boundaries must be symbols too.
+# Function boundaries. symbol_addrs.txt names only ~800 of the ~1900 functions and the linked ELF keeps no function
+# symbols, so the boundaries are the function starts known to the decompilation: every address of
+#   * a `func_XXXXXXXX` name (the splat name encodes the start address) in src/BATTLE/BATTLE.PRG/ (.c .h .s),
+#   * a symbol of config/BATTLE/BATTLE.PRG/symbol_addrs.txt marked type:func,
+#   * build/config/BATTLE/BATTLE.PRG/undefined_funcs_auto.txt
+# that lies in the code part of BATTLE.PRG. The matching build compiles every C function as exactly one function.
+CODE_END = BASE + 0x7F984
+
+
+def function_starts():
+    starts = {}
+    for l in open(os.path.join(ROOT, 'config/BATTLE/BATTLE.PRG/symbol_addrs.txt')):
+        m = re.match(r'\s*(\w+)\s*=\s*(0x[0-9A-Fa-f]+);\s*(.*)', l)
+        if m and 'type:func' in m.group(3) and BASE <= int(m.group(2), 16) < CODE_END:
+            starts.setdefault(int(m.group(2), 16), m.group(1))
+    for l in open(os.path.join(ROOT, 'build/config/BATTLE/BATTLE.PRG/undefined_funcs_auto.txt')):
+        m = re.match(r'\s*(\w+)\s*=\s*(0x[0-9A-Fa-f]+);', l)
+        if m and BASE <= int(m.group(2), 16) < CODE_END:
+            starts.setdefault(int(m.group(2), 16), m.group(1))
+    pat = re.compile(r'(?<![A-Za-z0-9_])func_(8[0-9A-Fa-f]{7})(?![A-Za-z0-9_])')
+    for dp, _, names in os.walk(os.path.join(ROOT, 'src/BATTLE/BATTLE.PRG')):
+        for n in names:
+            if n.endswith(('.c', '.h', '.s')):
+                for m in pat.finditer(open(os.path.join(dp, n), errors='replace').read()):
+                    a = int(m.group(1), 16)
+                    if BASE <= a < CODE_END and a % 4 == 0:
+                        starts.setdefault(a, 'func_' + m.group(1).upper())
+    return starts
+
+
+fstarts = function_starts()
+bounds = sorted(fstarts)
+sym_ok = False
+if start in fstarts:
+    interior = [a for a in bounds if start < a < end]
+    nxt = [a for a in bounds if a > start]
+    print('the range starts at the function %s' % fstarts[start])
+    print('interior function boundaries: %s' % (', '.join('%08X %s' % (a, fstarts[a]) for a in interior) or 'none'))
+    end_is_sym = end in fstarts or end == CODE_END
+    print('range end %08X is a function start: %s%s' % (end, end_is_sym, (' (%s)' % fstarts[end]) if end in fstarts else
+          ('; the next function start after the range start is %08X %s' % (nxt[0], fstarts[nxt[0]]) if nxt else '')))
+    sym_ok = end_is_sym
+else:
+    p0 = max([a for a in bounds if a < start] or [0])
+    print('the range does not start at a function; it lies inside %s @ %08X (+0x%X)' % (fstarts.get(p0, '?'), p0, start - p0))
+print('function boundaries (a): %s' % ('ok' if sym_ok else 'REJECTED'))
 
 # ---- name occurrences --------------------------------------------------------------------
 name_extra = []
@@ -186,6 +240,6 @@ for kind, rel, off, val in noise:
 print('noise by file type [hits, with a 4-aligned value, equal to the exact entry 0x%08X]:' % start)
 for key, e in sorted(by_ext.items()):
     print('   %-8s %s' % (key, e))
-bad = bool(real or branch_hits or fallthrough or name_extra)
+bad = bool(real or branch_hits or fallthrough or name_extra or not sym_ok)
 print('RESULT:', 'NO REFERENCES (range is dead)' if not bad else 'REFERENCED')
 sys.exit(1 if bad else 0)
