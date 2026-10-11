@@ -3572,7 +3572,7 @@ void _copyContainer(vs_menu_containerData* target, vs_menu_containerData* source
             weapon->blade = targetIndices->blades[weapon->blade - 1];
             weapon->grip = targetIndices->grips[weapon->grip - 1];
 
-            for (j = 0; j < 4; ++j) {
+            for (j = 0; j < 3; ++j) { /* personal mod: gems[3] holds the weapon slot, not a gem index */
                 if (weapon->gems[j] != 0) {
                     weapon->gems[j] = targetIndices->gems[weapon->gems[j] - 1];
                 }
@@ -3613,7 +3613,7 @@ void _copyContainer(vs_menu_containerData* target, vs_menu_containerData* source
             vs_battle_copyAligned(
                 shield, &source->shields[sourceIndex - 1], sizeof *shield);
             shield->index = i + 1;
-            for (j = 0; j < 4; ++j) {
+            for (j = 0; j < 3; ++j) { /* personal mod: gems[3] holds the removed-shield mark */
                 if (shield->gems[j] != 0) {
                     shield->gems[j] = targetIndices->gems[shield->gems[j] - 1];
                 }

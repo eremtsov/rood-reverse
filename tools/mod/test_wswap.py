@@ -687,7 +687,7 @@ def test_swap_sequence():
     mode = m.frame(R1)
     names = [e[0] for e in m.log]
     check(m.equipped() == [2], 'slot 2 equipped')
-    check('equipShield' in names and ('freeWepModel', 1) in m.log, 'two-handed: shield dropped %s' % names)
+    check('equipShield' not in names and ('freeWepModel', 1) not in m.log, 'two-handed without a shield on: no shield calls %s' % names)
     check(('freeCategory', 0, 0) in m.log, 'category change frees animation table')
     check(m.rd(Q, 1) == 7 and m.rd(Q + Q_MODEL, 2) == 3 and m.rd(Q + Q_INDEX, 1) == 0
           and m.rd(Q + Q_ACTOR, 1) == 0, 'category queue entry first')
@@ -713,6 +713,7 @@ def test_swap_sequence():
     m3.frame(0)
     m3.frame(R1)
     check(all(m3.rd(INV + SH_OFF + s * SH_SIZE + SH_EQ, 1) == 0 for s in range(8)), 'shield flags cleared')
+    check(('equipShield', 0) in m3.log and ('freeWepModel', 1) in m3.log, 'two-handed with a shield on: stats cleared, model slot freed: %s' % m3.log)
     check(m3.rd(Q + 0, 1) == 7, 'category 7 (two-handed) reloads anim table')
 
 
@@ -2063,7 +2064,9 @@ def test_code_budget():
         else:
             ranges.append([i, i + 1])
     allowed = [(0x8007991C, 4), (0x80099854, 268), (0x800AA108, 392), (0x800B26B8, 496), (0x800CA0A4, 4),
-               (0x800CA1AC, 4), (0x800D155C, 284), (0x800D197C, 412), (0x800F5924, 0x800F6000 - 0x800F5924)]
+               (0x800CA1AC, 4), (0x800D155C, 284), (0x800D197C, 412), (0x800F5924, 0x800F6000 - 0x800F5924),
+               # v3.1: the five extra unreferenced functions
+               (0x80099FA8, 128), (0x800A1B28, 116), (0x800A0B5C, 132), (0x800A071C, 76), (0x800AAC80, 92)]
     if not CLASSIC:
         # swapAllowed + hint strings, wfp_look, drawHint; the first-person look hook
         allowed += [(0x8009BD90, 204), (0x800733F8, 140), (0x8007FF8C, 116), (0x8007A10C, 4)]
@@ -2346,6 +2349,408 @@ def test_classic_passthrough():
     print('classic pass-through: L1/R1, right stick, 4000 random frames')
 
 
+# ===========================================================================
+# v3.1: per-slot shields (the shield of a weapon slot is a bit of shield.gems[3])
+# ===========================================================================
+SH_ID_O, SH_WEP_O, SH_MAT_O, SH_MASK_O = 4, 6, 0x28, 0x2F    # vs_main_inventoryShield: base.id, base.wepId, base.material, gems[3]
+
+
+def sh_addr(i):
+    return INV + SH_OFF + i * SH_SIZE
+
+
+def set_shield(m, i, eq=0, mask=0, wep=None, mat=None, sid=1):
+    """shield record i (0..7); sid = 0: an empty record (a discarded shield)"""
+    a = sh_addr(i)
+    m.w(a, bytes(SH_SIZE))
+    if sid:
+        m.wr(a, i + 1, 1)
+        m.wr(a + SH_EQ, eq, 1)
+        m.wr(a + SH_ID_O, sid, 1)
+        m.wr(a + SH_WEP_O, 100 + i if wep is None else wep, 1)
+        m.wr(a + SH_MAT_O, 7 + i if mat is None else mat, 2)
+    m.wr(a + SH_MASK_O, mask, 1)
+
+
+def masks(m):
+    return [m.rd(sh_addr(i) + SH_MASK_O, 1) for i in range(8)]
+
+
+def sh_eq(m):
+    return [i for i in range(8) if m.rd(sh_addr(i) + SH_EQ_, 1)]
+
+
+SH_EQ_ = SH_EQ
+
+
+def qent(m, k):
+    a = Q + k * Q_SIZE
+    return (m.rd(a, 1), m.rd(a + Q_INDEX, 1), m.rd(a + Q_MODEL, 2), m.rd(a + Q_UNK4), m.rd(a + Q_ACTOR, 1),
+            m.rd(a + Q_UNK11, 1), m.rd(a + Q_MAT, 1))
+
+
+def sync_cat(m):
+    """the game stores the loaded category in the actor when the category table has been loaded"""
+    for e in m.equipped():
+        b = m.rd(INV + e * W_SIZE + W_BLADE, 1)
+        m.wr(ACTOR + A_5B1, m.rd(INV + BL_OFF + (b - 1) * BL_SIZE + BL_CAT, 1), 1)
+
+
+def swap_machine(slots, cats, cur, shields, drawn=False, sentinel=True):
+    """weapons 0..7 (blade n = entry n-1, category from cats, default 1 = one-handed), the overlay open; shields = {i: kwargs}.
+    The sentinel (shield 7 with the bit of slot 8, no weapon there) keeps the one-time migration out of the way."""
+    m = Machine()
+    m.setup_weapons(set(), cur, blade_cat=cats, slots=slots)
+    for i, kw in shields.items():
+        set_shield(m, i, **kw)
+    if sentinel:
+        set_shield(m, 7, eq=0, mask=0x80)
+    sync_cat(m)
+    if drawn:
+        m.wr(CHSTATE + CH_DRAWN, 1)
+        m.wr(ACTOR + A_DRAWN_WORD, 1 << A_DRAWN_BIT)
+        m.wr(ACTOR + A_ANIM, 101, 1)
+    m.wr(MODE, 6)
+    m.wr(D_ANIM, 0, 1)
+    m.load_frames = 60
+    m.frame(L2 | R2)
+    m.log.clear()
+    return m
+
+
+def go(m, slot, drain=True):
+    """press the slot button; with drain=False the queue is left as the swap built it"""
+    m.log.clear()
+    press(m, SLOT_BTN[slot - 1])
+    if drain:
+        m.load_frames = 3
+        m.queue_wait = 3
+        run_until(m, lambda mm: mm.rd(S_LOADING_ADDR) == 0, hw=L2 | R2, limit=800)
+        sync_cat(m)
+        m.anim_left = 0
+        m.mode10_left = 0
+        m.wr(ACTOR + A_ANIM, 101 if m.rd(CHSTATE + CH_DRAWN) else 1, 1)
+        m.wr(MODE, 6)
+        m.frame(L2 | R2)
+
+
+def test_shield_assign():
+    # one-handed weapon + equipped shield: the slot gets the shield's bit (R2+Select = first free slot)
+    m = Machine()
+    m.setup_weapons(set(), 0)
+    set_shield(m, 2, eq=1)
+    set_shield(m, 5)
+    m.frame(0)
+    m.frame(R2 | SELECT)
+    m.frame(R2)
+    check(slots_of(m)[0] == 1 and masks(m) == [0, 0, 1, 0, 0, 0, 0, 0], 'assign 1H + shield: slot 1, bit 0 on the equipped shield: %s %s' % (slots_of(m), masks(m)))
+    m.frame(R2 | SELECT)
+    m.frame(R2)
+    check(slots_of(m)[0] == 0 and masks(m) == [0] * 8, 'clearing the slot clears its bit: %s' % masks(m))
+    # two-handed weapon: the slot has no shield
+    m = Machine()
+    m.setup_weapons(set(), 0, blade_cat={0: 3})
+    set_shield(m, 2, eq=1, mask=0x02)      # (an equipped shield with a two-handed weapon cannot happen; and slot 2 is not ours)
+    m.frame(0)
+    m.frame(R2 | SELECT)
+    check(slots_of(m)[0] == 1 and masks(m)[2] == 0x02, 'assign 2H: no bit set (bit 0 clear), other slots untouched: %s' % masks(m))
+    # no shield equipped: the slot has no shield, a stale bit of a bag shield is cleared
+    m = Machine()
+    m.setup_weapons(set(), 0)
+    set_shield(m, 1, mask=0x03)
+    m.frame(0)
+    m.frame(R2 | SELECT)
+    check(slots_of(m)[0] == 1 and masks(m)[1] == 0x02, 'assign without a shield: bit 0 cleared everywhere, bit 1 kept: %s' % masks(m))
+    # at most one shield per slot, one shield may serve several slots
+    m = Machine()
+    m.setup_weapons(set(), 0, slots={3: 2})
+    set_shield(m, 1, mask=0x01)                 # owned slot 1 before
+    set_shield(m, 2, eq=1, mask=0x02)
+    m.frame(0)
+    m.frame(R2 | SELECT)                         # entry 0 -> first free slot (1)
+    m.frame(R2)
+    check(slots_of(m)[0] == 1 and masks(m)[1] == 0 and masks(m)[2] == 0x03, 'unique per slot, several slots per shield: %s' % masks(m))
+    # assign mode: move from slot 1 to slot 5: the slot it leaves loses the bit, 5 gets it; the weapon that held 5 loses its slot
+    m = overlay_machine(slots={0: 1, 1: 5, 2: 3}, cur=0)
+    set_shield(m, 2, eq=1, mask=0x05)           # slots 1 and 3
+    set_shield(m, 4, mask=0x10)                 # slot 5 belonged to this one
+    m.frame(L2 | R2 | SELECT)
+    m.frame(L2 | R2)
+    m.frame(L2 | R2 | SLOT_BTN[4])
+    check(slots_of(m)[:3] == [5, 0, 3] and masks(m)[2] == 0x14 and masks(m)[4] == 0,
+          'move 1 -> 5: bit 0 off, bit 4 on the equipped shield, taken from the old holder: %s %s' % (slots_of(m), [hex(x) for x in masks(m)]))
+    m.frame(L2 | R2)
+    # assign mode on its own slot: cleared with its bit
+    m.frame(L2 | R2 | SELECT)
+    m.frame(L2 | R2)
+    m.frame(L2 | R2 | SLOT_BTN[4])
+    check(slots_of(m)[0] == 0 and masks(m)[2] == 0x04, 'toggle off: slot and bit cleared: %s' % [hex(x) for x in masks(m)])
+    # assign mode, no shield equipped: bit cleared, weapon recorded
+    m = overlay_machine(slots={0: 1}, cur=0)
+    set_shield(m, 3, mask=0x01)
+    m.frame(L2 | R2 | SELECT)
+    m.frame(L2 | R2)
+    m.frame(L2 | R2 | SLOT_BTN[1])
+    check(slots_of(m)[0] == 2 and masks(m)[3] == 0, 'assign mode without a shield: slot 1 bit off (moved to slot 2, no shield): %s' % [hex(x) for x in masks(m)])
+    # nobody equipped: nothing changes (invalid)
+    m = Machine()
+    m.setup_weapons({1}, -1)
+    set_shield(m, 2, eq=1, mask=0x02)
+    m.frame(0)
+    m.frame(R2 | SELECT)
+    check(masks(m)[2] == 0x02, 'unarmed: shield bits untouched')
+    # every slot number records its own bit
+    for slot in range(1, 9):
+        m = overlay_machine(slots={}, cur=3)
+        set_shield(m, 0, eq=1)
+        m.frame(L2 | R2 | SELECT)
+        m.frame(L2 | R2)
+        m.frame(L2 | R2 | SLOT_BTN[slot - 1])
+        check(masks(m)[0] == 1 << (slot - 1) and all(x == 0 for x in masks(m)[1:]), 'slot %d -> bit %d: %s' % (slot, slot - 1, masks(m)))
+
+
+def test_shield_swap():
+    base = dict(cats={}, cur=0)
+    # a) one-handed -> one-handed slot with a shield: put on (flags, stats call, model slot freed, model queued after the weapon's)
+    m = swap_machine({0: 1, 1: 2, 2: 3}, {}, 0, {2: dict(mask=0x02)})
+    go(m, 2, drain=False)
+    log = nostand(m.log)
+    a2 = sh_addr(2)
+    check(m.equipped() == [1] and sh_eq(m) == [2], 'a: weapon 1 and shield 2 equipped: %s %s' % (m.equipped(), sh_eq(m)))
+    check(('equipShield', a2) in log and ('freeWepModel', 1) in log, 'a: stats + model slot: %s' % log)
+    names = [e[0] for e in log]
+    check(names.index('equipShield') < names.index('equipWeapon'), 'a: shield before the weapon, like the menus')
+    check(qent(m, 0) == (3, 0, 21, UNK48, 0, 240, 1) and qent(m, 1) == (3, 1, 102, UNK48 + 0x100, 0, 241, 9) and m.rd(Q + 2 * Q_SIZE, 1) == 0,
+          'a: queue = weapon model (slot 0), shield model (slot 1, material of the shield): %s %s' % (qent(m, 0), qent(m, 1)))
+    check(m.rd(MODE) == 0 and m.rd(S_LOADING_ADDR) == 1, 'a: world held while loading')
+    run_until(m, lambda mm: mm.rd(S_LOADING_ADDR) == 0, hw=L2 | R2)
+    check(masks(m)[2] == 0x02 and m.rd(Q, 1) == 0, 'a: nothing consumed, queue drained')
+    # b) the shield of the slot is the one already on: nothing at all
+    m = swap_machine({0: 1, 1: 2, 2: 3}, {}, 1, {2: dict(eq=1, mask=0x06)})
+    go(m, 3, drain=False)
+    log = nostand(m.log)
+    check(m.equipped() == [2] and sh_eq(m) == [2] and not any(e[0] in ('equipShield',) for e in log) and ('freeWepModel', 1) not in log
+          and m.rd(Q + Q_SIZE, 1) == 0 and qent(m, 0)[1] == 0, 'b: same shield stays untouched: %s' % log)
+    # c) a slot without a shield: the equipped one is taken off (the user wants exact loadouts)
+    m = swap_machine({0: 1, 1: 2, 2: 3}, {}, 1, {2: dict(eq=1, mask=0x02)})
+    go(m, 3, drain=False)
+    log = nostand(m.log)
+    check(m.equipped() == [2] and sh_eq(m) == [] and ('equipShield', 0) in log and ('freeWepModel', 1) in log and m.rd(Q + Q_SIZE, 1) == 0
+          and masks(m)[2] == 0x02, 'c: slot without shield removes it, bits kept: %s %s' % (sh_eq(m), log))
+    # d) another shield: A off, B on
+    m = swap_machine({0: 1, 1: 2, 2: 3}, {}, 1, {2: dict(eq=1, mask=0x02), 3: dict(mask=0x04)})
+    go(m, 3, drain=False)
+    log = nostand(m.log)
+    check(sh_eq(m) == [3] and [e for e in log if e[0] == 'equipShield'] == [('equipShield', sh_addr(3))]
+          and qent(m, 1) == (3, 1, 103, UNK48 + 0x100, 0, 241, 10), 'd: shield B replaces A: %s %s' % (sh_eq(m), qent(m, 1)))
+    # e) two-handed target: shield off even if the slot has a mask; category change first
+    m = swap_machine({0: 1, 2: 3}, {2: 3}, 0, {2: dict(eq=1, mask=0x04)})
+    go(m, 3, drain=False)
+    log = nostand(m.log)
+    check(m.equipped() == [2] and sh_eq(m) == [] and ('equipShield', 0) in log and qent(m, 0)[0] == 7 and qent(m, 1)[:3] == (3, 0, 22)
+          and m.rd(Q + 2 * Q_SIZE, 1) == 0, 'e: 2H takes the shield off: %s' % log)
+    # f) 2H weapon and no shield on: no shield call at all
+    m = swap_machine({0: 1, 2: 3}, {2: 3}, 0, {2: dict(mask=0x04)})
+    go(m, 3, drain=False)
+    check(not any(e[0] == 'equipShield' for e in m.log) and ('freeWepModel', 1) not in m.log and sh_eq(m) == [], 'f: nothing to take off')
+    # g) the recorded shield is gone from the bag (discarded: empty record, the mask byte is not trusted): the slot has no shield
+    m = swap_machine({0: 1, 1: 2}, {}, 0, {2: dict(sid=0)})
+    m.wr(sh_addr(2) + SH_MASK_O, 0x02, 1)
+    go(m, 2, drain=False)
+    check(not any(e[0] == 'equipShield' for e in m.log) and sh_eq(m) == [] and m.equipped() == [1], 'g1: missing shield, none on: nothing happens: %s' % nostand(m.log))
+    m = swap_machine({0: 1, 1: 2}, {}, 0, {2: dict(sid=0), 3: dict(eq=1, mask=0x01)})
+    m.wr(sh_addr(2) + SH_MASK_O, 0x02, 1)
+    go(m, 2, drain=False)
+    check(('equipShield', 0) in m.log and sh_eq(m) == [] and m.rd(Q + Q_SIZE, 1) == 0, 'g2: missing shield, another on: taken off: %s' % nostand(m.log))
+    # h) two-handed -> one-handed: category table, weapon model, shield model, in that order
+    m = swap_machine({0: 1, 2: 3}, {2: 3}, 2, {2: dict(mask=0x01)})
+    go(m, 1, drain=False)
+    check(m.equipped() == [0] and sh_eq(m) == [2] and qent(m, 0)[:3] == (7, 0, 1) and qent(m, 1)[:3] == (3, 0, 20) and qent(m, 2)[:4] == (3, 1, 102, UNK48 + 0x100)
+          and m.rd(Q + 3 * Q_SIZE, 1) == 0, 'h: 2H -> 1H brings the shield back, queue: category, weapon, shield: %s' % [qent(m, k) for k in range(3)])
+    # i) a shield without a model (wepId 0): equipped, nothing queued for it
+    m = swap_machine({0: 1, 1: 2}, {}, 0, {2: dict(mask=0x02, wep=0)})
+    go(m, 2, drain=False)
+    check(sh_eq(m) == [2] and ('equipShield', sh_addr(2)) in m.log and m.rd(Q + Q_SIZE, 1) == 0, 'i: no model, no queue entry')
+    # j) corrupt data: two shields claim a slot: exactly one ends up on
+    m = swap_machine({0: 1, 1: 2}, {}, 0, {2: dict(mask=0x02), 3: dict(mask=0x02)})
+    go(m, 2, drain=False)
+    check(len(sh_eq(m)) == 1, 'j: duplicates: one shield on (%s)' % sh_eq(m))
+    # k) blocked swap: nothing is touched
+    for name, setup in (('transition 1', lambda mm: mm.wr(TRANS, 1)), ('busy', lambda mm: setattr(mm, 'busy', 1)), ('queue', lambda mm: mm.wr(Q, 3, 1))):
+        m = swap_machine({0: 1, 1: 2}, {}, 0, {2: dict(mask=0x02)})
+        setup(m)
+        go(m, 2, drain=False)
+        check(sh_eq(m) == [] and not any(e[0] == 'equipShield' for e in m.log), 'k: gate %s: shield untouched' % name)
+    # l) weapon drawn: sheathe, the shield changes while sheathed, draw again, name popup (the sequence of v3 unchanged)
+    m = swap_machine({0: 1, 1: 2}, {}, 0, {2: dict(mask=0x02)}, drawn=True)
+    go(m, 2, drain=False)
+    check(m.rd(S_LOADING_ADDR) == 2 and sh_eq(m) == [] and not any(e[0] == 'equipShield' for e in m.log), 'l: sheathing first, shield untouched yet: %s' % nostand(m.log))
+    m.load_frames = 3
+    run_until(m, lambda mm: mm.rd(S_LOADING_ADDR) == 0, hw=L2 | R2, limit=800)
+    log = nostand(m.log)
+    names = [e[0] for e in log]
+    check(sh_eq(m) == [2] and m.equipped() == [1], 'l: done: shield on')
+    check(names.index('toggle') < names.index('equipShield') < names.index('equipWeapon') < names.index('modelFlags')
+          < len(names) - 1 - names[::-1].index('toggle') < names.index('setText'), 'l: order sheathe, shield, weapon, flags, draw, name: %s' % names)
+    check(log[names.index('modelFlags')][1:] == (0, 0, 2) and names.count('toggle') == 2 and names.count('setText') == 1, 'l: flags set sheathed, one name popup')
+    # m) tick sequence unchanged for the finish (idle pose etc.) when a shield came along
+    m = swap_machine({0: 1, 1: 2}, {}, 0, {2: dict(mask=0x02)})
+    go(m, 2)
+    names = [e[0] for e in nostand(m.log) if e[0] not in ('exit6', 'sfx')]
+    check(names == ['equipShield', 'freeWepModel', 'equipWeapon', 'freeWepModel', 'playAnim', 'pose', 'memcpy', 'modelFlags', 'initInfo', 'setText'],
+          'm: call sequence with a shield: %s' % names)
+
+
+def test_shield_migration():
+    def machine(shields, slots, cats=None, cur=0):
+        m = Machine()
+        m.setup_weapons(set(), cur, blade_cat=cats or {}, slots=slots)
+        for i, kw in shields.items():
+            set_shield(m, i, **kw)
+        return m
+    # the equipped shield gets the bits of all one-handed slots, none for two-handed ones
+    m = machine({1: dict(eq=1)}, {0: 1, 1: 2, 2: 3, 4: 5}, cats={2: 3})
+    m.frame(0)
+    check(masks(m)[1] == 0b10011, 'migration: slots 1, 2, 5 (3 is two-handed): %s' % bin(masks(m)[1]))
+    for _ in range(5):
+        m.frame(0)
+    check(masks(m)[1] == 0b10011 and sum(masks(m)) == 0b10011, 'idempotent')
+    # not again once the user changed something (one bit anywhere is enough to stay out)
+    m.wr(sh_addr(1) + SH_MASK_O, 0b10, 1)
+    m.frame(0)
+    check(masks(m)[1] == 0b10, 'a loadout the user set is not completed by the migration')
+    # no shield equipped: nothing to give; a bag shield gets nothing
+    m = machine({3: dict(eq=0)}, {0: 1, 1: 2})
+    m.frame(0)
+    check(masks(m) == [0] * 8, 'no equipped shield: no bits')
+    # any bit on any shield (even a stale one) disables it
+    m = machine({1: dict(eq=1), 4: dict(mask=0x40)}, {0: 1})
+    m.frame(0)
+    check(masks(m)[1] == 0 and masks(m)[4] == 0x40, 'bits present: not migrated')
+    # empty slots / no weapons
+    m = machine({1: dict(eq=1)}, {})
+    m.frame(0)
+    check(masks(m) == [0] * 8, 'no slots: nothing')
+    # only in the field (menu closed)
+    m = machine({1: dict(eq=1)}, {0: 1})
+    m.wr(MENU, 1)
+    m.frame(0)
+    check(masks(m) == [0] * 8, 'menu open: not run')
+    m.wr(MENU, 0x3F)
+    m.frame(0)
+    check(masks(m)[1] == 1, 'menu closed: run')
+    # v2 favourites (several 1) are first made distinct by the slot migration, then the shield bits follow
+    m = machine({1: dict(eq=1)}, {0: 1, 2: 1, 3: 1})
+    m.frame(0)
+    check(slots_of(m)[:4] == [1, 0, 2, 3] and masks(m)[1] == 0b111, 'v2 favourites -> slots 1,2,3 -> bits: %s %s' % (slots_of(m), bin(masks(m)[1])))
+
+
+def test_shield_loadout():
+    """the user's test plan: slot 1 = 1H + shield A, slot 2 = 1H without shield, slot 3 = 2H, slot 4 = 1H + shield B;
+    the menu is modelled by setting the flags directly"""
+    for drawn in (False, True):
+        m = Machine()
+        cats = {2: 3}
+        m.setup_weapons(set(), 0, blade_cat=cats)
+        set_shield(m, 2, eq=1)
+        set_shield(m, 3)
+        m.frame(0)
+
+        def menu(weapon, shield):
+            for e in range(8):
+                m.wr(INV + e * W_SIZE + W_EQ, int(e == weapon), 1)
+            for i in range(8):
+                m.wr(sh_addr(i) + SH_EQ, int(i == shield), 1)
+            sync_cat(m)
+
+        def assign():
+            m.frame(R2 | SELECT)
+            m.frame(R2)
+        assign()                      # weapon 0 + shield A -> slot 1
+        menu(1, None)
+        assign()                      # weapon 1, no shield -> slot 2
+        menu(2, None)
+        assign()                      # weapon 2 (two-handed) -> slot 3
+        menu(3, 3)
+        assign()                      # weapon 3 + shield B -> slot 4
+        check(slots_of(m)[:4] == [1, 2, 3, 4] and masks(m)[2] == 0b0001 and masks(m)[3] == 0b1000, 'loadout recorded: %s %s' % (slots_of(m), masks(m)))
+        if drawn:
+            m.wr(CHSTATE + CH_DRAWN, 1)
+            m.wr(ACTOR + A_DRAWN_WORD, 1 << A_DRAWN_BIT)
+            m.wr(ACTOR + A_ANIM, 101, 1)
+        m.wr(MODE, 6)
+        m.wr(D_ANIM, 0, 1)
+        m.frame(L2 | R2)
+        for step, (slot, weapon, shield) in enumerate([(1, 0, 2), (2, 1, None), (3, 2, None), (4, 3, 3), (1, 0, 2), (4, 3, 3), (2, 1, None), (3, 2, None), (2, 1, None)]):
+            go(m, slot)
+            check(m.equipped() == [weapon] and sh_eq(m) == ([] if shield is None else [shield]),
+                  'drawn=%s step %d slot %d: weapon %s shield %s (want %d, %s)' % (drawn, step, slot, m.equipped(), sh_eq(m), weapon, shield))
+            check(masks(m)[2] == 0b0001 and masks(m)[3] == 0b1000 and slots_of(m)[:4] == [1, 2, 3, 4], 'loadout intact after the swap: %s' % masks(m))
+    # the shield moves to the Container (record emptied) and comes back as a new record: the slot's bit is gone with the record
+    m = swap_machine({0: 1, 1: 2}, {}, 0, {2: dict(mask=0x02)})
+    set_shield(m, 2, sid=0)               # moved away
+    go(m, 2)
+    check(sh_eq(m) == [] and m.equipped() == [1], 'shield moved away: slot has none')
+    set_shield(m, 5)                      # a shield comes back to the bag (new record, no bits)
+    go(m, 1)
+    go(m, 2)
+    check(sh_eq(m) == [], 'a returned shield has no slot bits: not put on')
+
+
+def test_shield_fuzz(frames=6000):
+    import random
+    rnd = random.Random(11)
+    m = Machine()
+    m.shim_r1 = False
+    cats = {0: 1, 1: 3, 2: 2, 3: 7, 4: 4, 5: 9, 6: 5, 7: 8}
+    m.setup_weapons(set(), 0, blade_cat=cats, slots={i: i + 1 for i in range(8)})
+    sl = SYMS_BLOB['s_loading']
+    swaps = 0
+    for f in range(frames):
+        if rnd.random() < 0.05:
+            for i in range(8):
+                if rnd.random() < 0.5:
+                    set_shield(m, i, eq=0, mask=rnd.choice([0, 0, 1, 2, 4, 0x81, 0xFF, 0x18]), sid=rnd.choice([1, 1, 1, 0]))
+            e = rnd.randrange(-1, 8)
+            for i in range(8):
+                a = sh_addr(i)
+                m.wr(a + SH_EQ, int(i == e and m.rd(a + SH_ID_O, 1) != 0), 1)
+        if not m.rd(sl) and rnd.random() < 0.3:
+            m.wr(MODE, rnd.choice([1, 6, 6]))
+            m.wr(MENU, 0x3F)
+            m.wr(TRANS, 0)
+            m.busy = 0
+            m.status = 0
+            m.wr(ACT2 + 0x954, 0, 2)
+            m.wr(CHSTATE + CH_DRAWN, rnd.choice([0, 1]))
+            m.wr(ACTOR + A_DRAWN_WORD, m.rd(CHSTATE + CH_DRAWN) << A_DRAWN_BIT)
+            m.wr(ACTOR + A_ANIM, 101 if m.rd(CHSTATE + CH_DRAWN) else 1, 1)   # (the real main loop ends the draw animation)
+            m.anim_left = 0
+            m.mode10_left = 0
+        hw = 0
+        if rnd.random() < 0.7:
+            hw = L2 | R2 | rnd.choice([0, CIR, TRI, SQR, CRS, DUP, DDOWN, DRIGHT, DLEFT, SELECT])
+        elif rnd.random() < 0.3:
+            hw = R2 | rnd.choice([0, SELECT])
+        m.load_frames = rnd.choice([1, 2, 5])
+        try:
+            m.frame(hw)
+        except Halt as e:
+            check(False, 'shield fuzz halted: %s' % e)
+            return
+        sync_cat(m) if not m.rd(sl) else None
+        check(len(sh_eq(m)) <= 1, 'shield fuzz: more than one shield on %s' % sh_eq(m))
+        for e in m.log:
+            if e[0] == 'equipShield':
+                check(e[1] == 0 or any(e[1] == sh_addr(i) for i in range(8)), 'shield fuzz: equipShield(%x)' % e[1])
+        # an equipped shield record is a real one
+        for i in sh_eq(m):
+            check(m.rd(sh_addr(i) + SH_ID_O, 1) != 0, 'shield fuzz: an empty record is "equipped"')
+        swaps += sum(1 for e in m.log if e[0] == 'equipWeapon')
+        m.log.clear()
+    print('shield fuzz: %d frames, %d swaps' % (frames, swaps))
+
+
 if __name__ == '__main__':
     print('variant: %s' % ('CLASSIC' if CLASSIC else 'default'))
     print('entry = 0x%08X  wslot_label = 0x%08X' % (ENTRY, LABEL))
@@ -2368,6 +2773,11 @@ if __name__ == '__main__':
     test_dpad_stick()
     test_assign_mode()
     test_wmode_transitions()
+    test_shield_assign()
+    test_shield_swap()
+    test_shield_migration()
+    test_shield_loadout()
+    test_shield_fuzz()
     test_state_machine_extras()
     test_drawn_sequence()
     test_drawn_edge_cases()

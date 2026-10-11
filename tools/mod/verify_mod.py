@@ -49,6 +49,8 @@ PRG_SIZE = 579584
 TAIL_RAM, TAIL_LIMIT = 0x800F5924, 0x800F6000
 PRG_LBA, PRG_SECTORS = 1100, 283
 MENU5_LBA, MENU5_SECTORS, MENU5_SIZE = 85075, 13, 26296   # MENU5.PRG (the map screen), changed in the default variant only
+MENU7_LBA, MENU7_SECTORS, MENU7_SIZE = 85126, 18, 34990   # MENU7.PRG (the container save): two loop bounds 4 -> 3 (both variants, v3.1)
+MENU7_WORDS = (0x6C50, 0x6DD8)
 CLASSIC = bool(re.search(r'^#define WSWAP_CLASSIC 1', open('src/mod/wswap.c').read(), re.M))
 # section : (RAM, size of the unreferenced function range, name of the function(s))
 DEAD = {
@@ -57,6 +59,11 @@ DEAD = {
     '.wB': (0x800AA108, 392, 'func_800AA108 + func_800AA218'),
     '.wC': (0x800D155C, 284, 'func_800D155C'),
     '.wD': (0x80099854, 268, 'func_80099854 + func_80099900'),
+    '.wR1': (0x80099FA8, 128, 'func_80099FA8'),     # v3.1
+    '.wR2': (0x800A1B28, 116, 'func_800A1B28'),     # v3.1
+    '.wX1': (0x800A0B5C, 132, 'func_800A0B5C + func_800A0BA0'),     # v3.1
+    '.wX2': (0x800A071C, 76, 'func_800A071C'),      # v3.1
+    '.wX3': (0x800AAC80, 92, 'func_800AAC80'),      # v3.1
 }
 HOOKS = [(0x8007991C, 'vs_battle_exec: jal vs_main_processPadState', 'wswap_entry'),
          (0x800CA0A4, 'func_800C9FE8: jal func_800C9EB8 (D-pad group)', 'wslot_label'),
@@ -472,7 +479,7 @@ with open(img, 'rb') as fa_, open(prev_img, 'rb') as fb_:
         if x != y:
             bad.append(sec)
         sec += 1
-allowed_files = [('BATTLE.PRG', PRG_LBA, PRG_SECTORS)]
+allowed_files = [('BATTLE.PRG', PRG_LBA, PRG_SECTORS), ('MENU7.PRG', MENU7_LBA, MENU7_SECTORS)]
 if not CLASSIC:
     allowed_files.append(('MENU5.PRG', MENU5_LBA, MENU5_SECTORS))
 in_allowed = lambda s: any(l <= s < l + n for _, l, n in allowed_files)
@@ -531,7 +538,7 @@ if not CLASSIC:
         fail('MENU5.PRG size')
     p('MENU5.PRG extracted from the image (%d bytes, same size as before) == build/data/MENU/MENU5.PRG: %s; EDC/ECC of its changed sectors: %s'
       % (len(m5n), 'ok' if m5n == built else 'NO', 'valid' if not bad5 else 'INVALID'))
-    p('(c) MENU5.PRG, previous image vs the new one: every changed word (map panning inverted; instruction immediates only)')
+    p('(c) MENU5.PRG, previous image vs the new one: every changed word (v3 already has the map panning edit: none expected; vs the original game file: 8)')
     nwords = 0
     for o in range(0, MENU5_SIZE, 4):
         a, b = struct.unpack_from('<I', m5p, o)[0], struct.unpack_from('<I', m5n, o)[0]
@@ -539,8 +546,48 @@ if not CLASSIC:
             nwords += 1
             p('    +0x%05X: %08X -> %08X' % (o, a, b))
     p('    %d words changed' % nwords)
-    if nwords != 8:
-        fail('MENU5.PRG: expected exactly 8 changed words, %d' % nwords)
+    if nwords != 0:
+        fail('MENU5.PRG: expected no change against v3, %d words' % nwords)
+    orig5 = open('data/MENU/MENU5.PRG', 'rb').read()
+    n5 = sum(1 for o in range(0, MENU5_SIZE, 4) if orig5[o:o + 4] != m5n[o:o + 4])
+    p('    MENU5.PRG against the original game file: %d words differ (same as the previous release: map panning + confirm/cancel swap)' % n5)
+# MENU7.PRG (v3.1, both variants): against the previous release (v3, which already carries the confirm/cancel swap edits) exactly two
+# words differ, `slti rt, rs, 4` -> `slti rt, rs, 3`; against the original game file those two plus the v3 confirm/cancel swap edits
+with open(img, 'rb') as fa_, open(prev_img, 'rb') as fb_:
+    m7n = bytearray()
+    m7p = bytearray()
+    bad7 = []
+    for s in range(MENU7_LBA, MENU7_LBA + MENU7_SECTORS):
+        fa_.seek(s * 2352)
+        fb_.seek(s * 2352)
+        x = fa_.read(2352)
+        y = fb_.read(2352)
+        m7n += x[24:24 + 2048]
+        m7p += y[24:24 + 2048]
+        if x != y and check_sector(x) is False:
+            bad7.append(s)
+m7n, m7p = bytes(m7n[:MENU7_SIZE]), bytes(m7p[:MENU7_SIZE])
+orig7 = open('data/MENU/MENU7.PRG', 'rb').read()
+built7 = open('build/data/MENU/MENU7.PRG', 'rb').read()
+p('MENU7.PRG: extracted from the image == build/data/MENU/MENU7.PRG: %s; sectors 85126..85143 (18) changed vs the previous image: %d; EDC/ECC of the changed ones: %s'
+  % ('ok' if m7n == built7 else 'NO', sum(1 for s in bad + [] if MENU7_LBA <= s < MENU7_LBA + MENU7_SECTORS), 'valid' if not bad7 else 'INVALID'))
+if m7n != built7 or len(orig7) != MENU7_SIZE or len(m7n) != MENU7_SIZE:
+    fail('MENU7.PRG in the image differs from the build / size')
+if bad7:
+    fail('EDC/ECC of MENU7.PRG sectors: %s' % bad7)
+dw = [(o, struct.unpack_from('<I', m7p, o)[0], struct.unpack_from('<I', m7n, o)[0]) for o in range(0, MENU7_SIZE, 4)
+      if m7p[o:o + 4] != m7n[o:o + 4]]
+dorig = sum(1 for o in range(0, MENU7_SIZE, 4) if orig7[o:o + 4] != m7n[o:o + 4])
+dprev = sum(1 for o in range(0, MENU7_SIZE, 4) if orig7[o:o + 4] != m7p[o:o + 4])
+p('   MENU7.PRG words differing from the original game file: previous release %d, this release %d (= previous + the 2 below)' % (dprev, dorig))
+if dorig != dprev + 2:
+    fail('MENU7.PRG: this release must differ from the original in exactly 2 more words than the previous one')
+for o, a, b in dw:
+    p('   MENU7.PRG +0x%05X: %08X -> %08X   (opcode %02x, rt r%d, rs r%d, immediate %d -> %d)' % (o, a, b, a >> 26, (a >> 16) & 31, (a >> 21) & 31, a & 0xFFFF, b & 0xFFFF))
+if [o for o, _, _ in dw] != list(MENU7_WORDS) or any((a >> 26) != 0x0A or (a & ~0xFFFF) != (b & ~0xFFFF) or (a & 0xFFFF) != 4 or (b & 0xFFFF) != 3 for _, a, b in dw):
+    fail('MENU7.PRG: expected exactly the two loop-bound immediates 4 -> 3')
+else:
+    p('   MENU7.PRG vs the previous release: exactly 2 words differ (instruction immediates 4 -> 3 only, same size 34990, same 18 sectors)')
 newf = bytes(newf)
 prevf = bytes(prevf)
 if newf != new_prg:
